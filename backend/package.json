@@ -1,0 +1,28 @@
+{
+  "name": "offlinepay-backend",
+  "version": "1.0.0",
+  "description": "Backend server for OfflinePay - Offline-first payment system prototype",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "node scripts/demo-simple.js"
+  },
+  "keywords": [
+    "offline",
+    "payment",
+    "digital-wallet",
+    "educational"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "mongoose": "^9.0.2",
+    "nanoid": "^5.1.6",
+    "uuid": "^13.0.0"
+  }
+}
