@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import connectDB from './config/database.js';
 import userRoutes from './routes/userRoutes.js';
 import transactionRoutes from './routes/transactionRoutes.js';
+import qrRoutes from './routes/qrRoutes.js';
 
 // Load environment variables
 dotenv.config();
@@ -28,7 +29,7 @@ app.get('/', (req, res) => {
     service: 'OfflinePay Backend',
     version: '1.0.0',
     status: 'running',
-    phase: 'Phase 1 - Basic Wallet',
+    phase: 'Phase 2 - QR Payment System',
     warning: '⚠️ SIMULATED MONEY ONLY - Educational Project',
     timestamp: new Date().toISOString()
   });
@@ -37,6 +38,7 @@ app.get('/', (req, res) => {
 // API routes
 app.use('/api/users', userRoutes);
 app.use('/api/transactions', transactionRoutes);
+app.use('/api/qr', qrRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -82,6 +84,9 @@ const startServer = async () => {
       console.log(`   POST   /api/transactions/transfer - Create transfer`);
       console.log(`   GET    /api/transactions/user/:id - Get transaction history`);
       console.log(`   GET    /api/transactions/:txnId   - Get transaction details`);
+      console.log(`   POST   /api/qr/generate/:id       - Generate payment QR`);
+      console.log(`   POST   /api/qr/verify             - Verify QR payload`);
+      console.log(`   POST   /api/qr/pay                - Process QR payment`);
       console.log('');
     });
 
