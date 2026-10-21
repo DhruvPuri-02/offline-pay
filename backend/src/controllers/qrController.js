@@ -191,6 +191,19 @@ export const processOfflinePayment = async (req, res) => {
     });
 
   } catch (error) {
+    // E11000 = MongoDB duplicate key. Our findOne() nonce check above has a
+    // race window: two uploads of the same transaction can both pass it.
+    // The unique index on `nonce` is the real defence - whoever loses the
+    // race gets this error, and we report it as a duplicate instead of
+    // double-crediting the receiver.
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        error: 'Transaction already processed (duplicate nonce)',
+        rejectionReason: 'DUPLICATE_NONCE'
+      });
+    }
+
     console.error('Process offline payment error:', error);
     res.status(500).json({
       success: false,

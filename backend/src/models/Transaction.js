@@ -46,7 +46,8 @@ const transactionSchema = new mongoose.Schema({
   },
   nonce: {
     type: String,
-    default: null
+    default: null,
+    index: true
   },
   senderPublicKey: {
     type: String,
@@ -74,6 +75,22 @@ transactionSchema.index({ senderId: 1, timestamp: -1 });
 transactionSchema.index({ receiverId: 1, timestamp: -1 });
 transactionSchema.index({ senderWalletId: 1, timestamp: -1 });
 transactionSchema.index({ receiverWalletId: 1, timestamp: -1 });
+
+// Replay protection at the database level.
+//
+// A *sparse* unique index would NOT work here: TOPUP transactions store an
+// explicit `nonce: null` (not a missing field), and MongoDB's sparse index
+// still indexes explicit nulls - so the second topup would collide with the
+// first. A *partial* index avoids that: it only indexes nonces that are
+// actually strings, so nulls are free but a repeated nonce raises E11000.
+//
+// Why we need this at all: the findOne({nonce}) check in the controllers has
+// a race window - two concurrent uploads of the same transaction can both
+// pass the check. This index closes that window.
+transactionSchema.index(
+  { nonce: 1 },
+  { unique: true, partialFilterExpression: { nonce: { $type: 'string' } } }
+);
 
 const Transaction = mongoose.model('Transaction', transactionSchema);
 

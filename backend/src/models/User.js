@@ -54,9 +54,9 @@ const userSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for faster lookups
-userSchema.index({ userId: 1 });
-userSchema.index({ walletId: 1 });
+// NOTE: userId and walletId already declare `index: true` above, so adding
+// userSchema.index() here again would duplicate them (mongoose warns and
+// drops one definition). Only add extra compound/secondary indexes below.
 
 const User = mongoose.model('User', userSchema);
 

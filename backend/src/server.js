@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import connectDB from './config/database.js';
+import connectDB, { disconnectDB } from './config/database.js';
 import userRoutes from './routes/userRoutes.js';
 import transactionRoutes from './routes/transactionRoutes.js';
 import qrRoutes from './routes/qrRoutes.js';
@@ -64,8 +64,8 @@ const startServer = async () => {
     // Connect to MongoDB
     await connectDB();
 
-    // Start listening
-    app.listen(PORT, () => {
+    // Capture the server handle so we can close it cleanly on exit.
+    const server = app.listen(PORT, () => {
       console.log('');
       console.log('═════════════════════════════════════════════════════════');
       console.log('🚀 OfflinePay Backend Server');
@@ -89,6 +89,21 @@ const startServer = async () => {
       console.log(`   POST   /api/qr/pay                - Process QR payment`);
       console.log('');
     });
+
+    // Graceful shutdown: stop accepting requests, then close MongoDB (and the
+    // in-memory server, if one is running - otherwise its process lingers).
+    const shutdown = async () => {
+      console.log('\n⏳ Shutting down...');
+      server.close(async () => {
+        await disconnectDB();
+        process.exit(0);
+      });
+      // Failsafe if a request hangs the close.
+      setTimeout(() => process.exit(0), 5000).unref();
+    };
+
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
 
   } catch (error) {
     console.error('Failed to start server:', error);

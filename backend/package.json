@@ -25,5 +25,8 @@
     "mongoose": "^9.0.2",
     "nanoid": "^5.1.6",
     "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.3.0"
   }
 }
