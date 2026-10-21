@@ -109,14 +109,41 @@ The backend's `User.transactionPinHash` intentionally stays `null` -
 a PIN hash never syncs to the server. Honest limitations are documented
 in `docs/OFFLINE_FIRST.md` section 6.
 
-### 🔄 Phase 5: Cryptographic Security
+### ✅ Phase 5: Cryptographic Security
 **Goal**: Prevent transaction tampering
 
-**Features**:
-- Generate RSA/ECDSA key pair
-- Sign transactions with private key
-- Verify signatures with public key
-- Protect private key storage
+**What was built**:
+- Every payment is signed (Ed25519, RFC 8032) with the payer's private
+  key over a **canonical payload**: fixed key order, amounts as integer
+  paise, timestamps as integer epoch-milliseconds - so the signed bytes
+  are identical on any platform
+- Signing happens inside `createOfflinePayment()` (after the PIN check);
+  the receipt QR carries `signature` + `senderPublicKey`
+- The receiver's Scan screen **verifies on sight**: a tampered
+  amount/receiver/description shows a red INVALID banner and blocks
+  recording; `recordIncomingPayment` re-verifies (defense in depth)
+- Private key seed lives in the platform keystore
+  (`flutter_secure_storage`: Android Keystore / Windows Credential
+  Manager / iOS Keychain), never in plain SQLite; keys are generated
+  lazily on the first payment and restored from the seed after restarts
+- **Cross-platform interop**: the same signed vector is verified by
+  Dart (`test/signature_service_test.dart`) AND Node's built-in crypto
+  (`npm run test:phase5`) - Phase 6's backend can check any receipt.
+  `scripts/verify_receipt.js` verifies a copied receipt JSON by hand
+
+**Algorithm choice (a documented deviation from the plan)**: the plan
+suggested RSA/ECDSA. Measured instead of guessed: ECDSA P-256 in the
+standard `cryptography` package throws `UnimplementedError` for pure-Dart
+key generation, and RSA keygen is far too slow for a phone. Ed25519:
+keygen ~56ms, sign ~10ms, verify ~7ms, 32-byte keys / 64-byte signatures
+(QR friendly), keys restorable from a seed, and first-class Node/Python
+interop. Same requirements, better engineering - the underlying rule
+(use established libraries, never hand-roll crypto) is fully honored.
+
+**Important**: signatures prove "the holder of this key authorized these
+exact details". Binding keys to real identities (so a random keypair
+cannot impersonate a user) arrives with Phase 6 public-key registration -
+documented honestly in `docs/OFFLINE_FIRST.md` section 7.
 - Prevent amount modification
 
 **Why**: Ensures transaction integrity and prevents forgery

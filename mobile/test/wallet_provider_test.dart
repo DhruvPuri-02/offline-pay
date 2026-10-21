@@ -3,6 +3,7 @@ import 'package:offlinepay/models/transaction.dart';
 import 'package:offlinepay/models/user.dart';
 import 'package:offlinepay/providers/wallet_provider.dart';
 import 'package:offlinepay/services/local_database.dart';
+import 'package:offlinepay/services/secure_key_store.dart';
 import 'package:offlinepay/utils/payment_exception.dart';
 // hide Transaction: sqflite_common also exports a `Transaction` type.
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' hide Transaction;
@@ -18,7 +19,9 @@ void main() {
 
   setUp(() async {
     db = LocalDatabase.inMemory();
-    wallet = WalletProvider(database: db);
+    // Phase 5: tests have no platform keystore (flutter_secure_storage
+    // needs real plugins), so payments sign with an in-memory key store.
+    wallet = WalletProvider(database: db, keyStore: InMemoryKeyStore());
     await wallet.initialize();
   });
 

@@ -4,8 +4,12 @@ import 'package:provider/provider.dart';
 import '../models/qr_message.dart';
 import '../models/transaction.dart';
 import '../providers/wallet_provider.dart';
+import '../services/signature_service.dart';
 import '../utils/payment_exception.dart';
 import '../widgets/qr_scanner_view.dart';
+
+/// What we know about the receipt's signature (Phase 5).
+enum _SignatureState { unsigned, valid, invalid }
 
 /// Receiver side of the receipt hand-off.
 ///
@@ -27,15 +31,24 @@ class _RecordPaymentScreenState extends State<RecordPaymentScreen> {
   bool _submitting = false;
   String? _resultMessage;
   bool _resultIsError = false;
+  _SignatureState _signatureState = _SignatureState.unsigned;
 
-  void _onScanned(String raw) {
+  Future<void> _onScanned(String raw) async {
     if (_submitting || _pending != null) return;
 
     try {
       final message = QrMessage.decode(raw);
       switch (message) {
         case TransactionReceiptMessage(:final transaction):
-          setState(() => _pending = transaction);
+          // Phase 5: verify BEFORE showing the confirm card, so a
+          // tampered receipt is visibly refused instead of quietly
+          // failing after the user taps Record.
+          final state = await _verifyReceipt(transaction);
+          if (!mounted) return;
+          setState(() {
+            _pending = transaction;
+            _signatureState = state;
+          });
         case PaymentRequestMessage():
           _showError(
             'That is a payment request. Requests are scanned by the PAYER '
@@ -45,6 +58,25 @@ class _RecordPaymentScreenState extends State<RecordPaymentScreen> {
     } on FormatException catch (e) {
       _showError(e.message);
     }
+  }
+
+  /// Cryptographic verdict on a scanned receipt (same check the wallet
+  /// re-runs at record time - defense in depth, and it costs ~7ms).
+  Future<_SignatureState> _verifyReceipt(Transaction tx) async {
+    final signature = tx.signature;
+    final publicKey = tx.senderPublicKey;
+    if (signature == null && publicKey == null) {
+      return _SignatureState.unsigned; // pre-Phase-5 build sent this
+    }
+    if (signature == null || publicKey == null) {
+      return _SignatureState.invalid;
+    }
+    final valid = await SignatureService.verify(
+      SignatureService.canonicalPayload(tx),
+      signatureBase64: signature,
+      publicKeyBase64: publicKey,
+    );
+    return valid ? _SignatureState.valid : _SignatureState.invalid;
   }
 
   void _showError(String message) {
@@ -170,9 +202,14 @@ class _RecordPaymentScreenState extends State<RecordPaymentScreen> {
               style: TextStyle(color: Colors.red, fontSize: 13),
             ),
           ],
-          const SizedBox(height: 24),
+          const SizedBox(height: 12),
+          _signatureBanner(tx),
+          const SizedBox(height: 12),
           FilledButton(
-            onPressed: (!isForMe || _submitting) ? null : _record,
+            onPressed: (!isForMe || _submitting) ||
+                    _signatureState == _SignatureState.invalid
+                ? null
+                : _record,
             style: FilledButton.styleFrom(padding: const EdgeInsets.all(16)),
             child: _submitting
                 ? const SizedBox(
@@ -190,6 +227,55 @@ class _RecordPaymentScreenState extends State<RecordPaymentScreen> {
         ],
       ),
     );
+  }
+
+  /// Phase 5 verdict, rendered before the user commits to recording.
+  Widget _signatureBanner(Transaction tx) {
+    final (color, icon, text) = switch (_signatureState) {
+      _SignatureState.valid => (
+          Colors.green,
+          Icons.verified_user,
+          'Signature verified - matches payer key ${_fingerprint(tx.senderPublicKey)}',
+        ),
+      _SignatureState.invalid => (
+          Colors.red,
+          Icons.gpp_bad,
+          'Signature INVALID - this receipt does not match its details '
+              '(tampered or forged). Recording is blocked.',
+        ),
+      _SignatureState.unsigned => (
+          Colors.grey,
+          Icons.warning_amber,
+          'Unsigned receipt (sent by an older app version). It cannot be '
+              'cryptographically checked.',
+        ),
+    };
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(text, style: TextStyle(color: color, fontSize: 13)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Short slice of a base64 public key for display.
+  static String _fingerprint(String? publicKeyBase64) {
+    if (publicKeyBase64 == null || publicKeyBase64.length < 8) {
+      return 'unknown';
+    }
+    return publicKeyBase64.substring(0, 8);
   }
 
   Widget _row(String label, String value, {bool warn = false}) {

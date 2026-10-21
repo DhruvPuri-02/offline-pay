@@ -17,7 +17,7 @@ and double-spend controls.
 - ✅ Phase 2: QR code payments (two-message protocol, camera + paste scanning)
 - ✅ Phase 3: Offline-first architecture (SQLite ledger, pending-sync queue)
 - ✅ Phase 4: Transaction PIN security (bcrypt hashing, 5-attempt lockout)
-- 🔄 Phase 5: Cryptographic signatures
+- ✅ Phase 5: Cryptographic signatures (Ed25519 receipts, verified on scan + by Node)
 - 🔄 Phase 6: Backend synchronization
 - 🔄 Phase 7: Double-spending protection (local half done: reservation + offline cap)
 - 🔄 Phase 8: Advanced communication (Bluetooth/NFC)
@@ -37,7 +37,8 @@ and double-spend controls.
 - Unique transaction IDs and nonces (replay protection)
 - Local balance reservation + offline spending limits
 - Transaction PIN: salted bcrypt hash + temporary lockout (device-local, Phase 4)
-- Digital signatures: Phase 5
+- Ed25519 transaction signatures: tamper-evident receipts, verified on
+  scan and cross-checked by the backend via a shared interop vector (Phase 5)
 
 ## What Works Right Now
 

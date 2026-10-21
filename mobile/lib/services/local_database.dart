@@ -58,6 +58,12 @@ class LocalDatabase {
       version: _schemaVersion,
       onCreate: _createSchema,
       onUpgrade: _upgradeSchema,
+      // sqflite caches opened databases per path ("single instance" mode)
+      // - including ':memory:'. Without opting out, a second
+      // `LocalDatabase.inMemory()` would silently SHARE the first one's
+      // database, merging what should be two separate devices. Real file
+      // paths keep the default behavior.
+      singleInstance: _pathOverride == ':memory:' ? false : null,
     );
   }
 

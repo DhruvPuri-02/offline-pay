@@ -143,9 +143,21 @@ transaction is written. Wrong PINs are counted - 5 failures lock
 payments for 30 seconds. The key icon on the Home app bar opens the
 PIN settings (status, change PIN, lockout countdown).
 
-### 🔄 Next: Phase 5 - Cryptographic signatures
-Extension points are already marked in
-`mobile/lib/providers/wallet_provider.dart` (`PHASE 5 HOOK`).
+### ✅ Phase 5 - Cryptographic signatures
+Every payment is signed (Ed25519) over the exact payment details. The
+payer's receipt screen shows the key fingerprint; the receiver's Scan
+screen verifies the signature *before* you can record - a tampered
+amount/receiver/description shows a red INVALID banner and blocks the
+transaction. The private key seed lives in the platform keystore
+(Android Keystore / Windows Credential Manager), generated lazily on
+the first payment. The backend verifies the same bytes:
+`cd backend && npm run test:phase5`, or copy a receipt JSON and run
+`node scripts/verify_receipt.js receipt.json`.
+
+### 🔄 Next: Phase 6 - Backend synchronization
+Upload `PENDING_SYNC` transactions, reconcile against the server,
+arbitrate double-spends authoritatively (see `docs/OFFLINE_FIRST.md`
+section 8).
 
 ---
 
@@ -173,7 +185,7 @@ Extension points are already marked in
 ---
 
 **Project**: OfflinePay
-**Status**: Phases 1-3 complete
+**Status**: Phases 1-5 complete
 **Date**: October 2026
 
 **⚠️ SIMULATED MONEY ONLY - Educational Project**

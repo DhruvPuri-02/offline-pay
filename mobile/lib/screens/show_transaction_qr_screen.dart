@@ -80,6 +80,13 @@ class ShowTransactionQRScreen extends StatelessWidget {
                     const Divider(),
                     _row('Transaction ID', transaction.transactionId),
                     const Divider(),
+                    _row(
+                      'Signature',
+                      transaction.signature != null
+                          ? 'signed (${_keyFingerprint(transaction.senderPublicKey)})'
+                          : 'not signed',
+                    ),
+                    const Divider(),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -146,5 +153,14 @@ class ShowTransactionQRScreen extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  /// Short slice of the signing public key (base64) - long enough for a
+  /// human to compare two devices, short enough to fit the card.
+  static String _keyFingerprint(String? publicKeyBase64) {
+    if (publicKeyBase64 == null || publicKeyBase64.length < 8) {
+      return 'unknown key';
+    }
+    return 'key ${publicKeyBase64.substring(0, 8)}';
   }
 }

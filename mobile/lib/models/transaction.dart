@@ -70,6 +70,33 @@ class Transaction {
       'timestamp': timestamp.toIso8601String(),
     };
   }
+
+  /// Phase 5: an identical copy carrying this payment's signature.
+  ///
+  /// Every field - INCLUDING the timestamp - is copied exactly, so the
+  /// canonical payload that was signed describes precisely this copy.
+  /// (`Transaction` is immutable; signing mutates nothing.)
+  Transaction signed({
+    required String signature,
+    required String senderPublicKey,
+  }) {
+    return Transaction(
+      transactionId: transactionId,
+      senderId: senderId,
+      receiverId: receiverId,
+      senderWalletId: senderWalletId,
+      receiverWalletId: receiverWalletId,
+      amount: amount,
+      type: type,
+      status: status,
+      description: description,
+      nonce: nonce,
+      senderPublicKey: senderPublicKey,
+      signature: signature,
+      rejectionReason: rejectionReason,
+      timestamp: timestamp,
+    );
+  }
 }
 
 enum TransactionType {

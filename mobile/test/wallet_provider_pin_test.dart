@@ -3,6 +3,7 @@ import 'package:offlinepay/models/transaction.dart';
 import 'package:offlinepay/providers/wallet_provider.dart';
 import 'package:offlinepay/services/local_database.dart';
 import 'package:offlinepay/services/pin_service.dart';
+import 'package:offlinepay/services/secure_key_store.dart';
 import 'package:offlinepay/utils/payment_exception.dart';
 // hide Transaction: sqflite_common also exports a `Transaction` type.
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' hide Transaction;
@@ -25,7 +26,11 @@ void main() {
   setUp(() async {
     db = LocalDatabase.inMemory();
     now = DateTime(2026, 1, 1, 12, 0, 0);
-    wallet = WalletProvider(database: db, clock: () => now);
+    wallet = WalletProvider(
+      database: db,
+      clock: () => now,
+      keyStore: InMemoryKeyStore(),
+    );
     await wallet.initialize();
   });
 

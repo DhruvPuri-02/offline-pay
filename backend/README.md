@@ -8,6 +8,9 @@ Backend server for OfflinePay - An offline-first digital payment prototype.
 
 - **Phase 1**: user creation, simulated balances, transfers, history
 - **Phase 2**: QR payment-request generation and verification endpoints
+- **Phase 5 (backend half)**: Ed25519 receipt verification
+  (`src/utils/transactionSignature.js`) proven against the app with a
+  shared signed interop vector (`npm run test:phase5`)
 - **Replay protection**: duplicate-nonce uploads are rejected with
   `409 DUPLICATE_NONCE` (database-enforced, race-safe)
 - **Zero-install database**: runs against an in-memory MongoDB when no
@@ -69,6 +72,7 @@ npm start
 ```bash
 npm test            # Phase 1 wallet demo
 npm run test:phase2 # QR flow demo
+npm run test:phase5 # Node verifies the Dart-signed interop vector
 ```
 
 > **PowerShell:** if `npm` is blocked by execution policy, use `npm.cmd`.
@@ -199,7 +203,7 @@ Responses:
   name: String,
   walletId: String (unique),
   balance: Number,
-  publicKey: String (for Phase 5),
+  publicKey: String (set when Phase 6 registers the device key),
   transactionPinHash: String (stays null by design - see Security Notes),
   createdAt: Date,
   updatedAt: Date
@@ -222,8 +226,8 @@ Responses:
                                          // non-null string nonces are
                                          // indexed, so seeded topups with
                                          // nonce: null don't collide
-  senderPublicKey: String (for Phase 5),
-  signature: String (for Phase 5),
+  senderPublicKey: String (from Phase 5 receipts),
+  signature: String (Ed25519, verified before any upload is trusted),
   rejectionReason: String,
   timestamp: Date
 }
@@ -267,13 +271,20 @@ npm test
 
 This creates sample users (Alice, Bob, Charlie) and demonstrates transfers between them.
 
+Verify a receipt signature (Phase 5 interop):
+```bash
+npm run test:phase5
+npm run test:phase2
+node scripts/verify_receipt.js receipt.json   # paste a receipt from the app
+```
+
 ## Development Roadmap
 
 - [x] **Phase 1**: Basic wallet system
 - [x] **Phase 2**: QR endpoints + replay protection (backend side)
 - [x] **Phase 3**: Offline-first mobile app (backend unchanged)
 - [x] **Phase 4**: Transaction PIN security (app-side only; PIN never syncs)
-- [ ] **Phase 5**: Cryptographic signatures
+- [x] **Phase 5**: Cryptographic signatures (verifier + interop vector; public-key registration arrives with Phase 6)
 - [ ] **Phase 6**: Backend synchronization (upload/verify/reconcile endpoint)
 - [ ] **Phase 7**: Double-spending protection (server-side arbitration)
 - [ ] **Phase 8**: Advanced communication (Bluetooth/NFC)
@@ -291,7 +302,10 @@ backend/
 │   ├── controllers/
 │   │   ├── userController.js
 │   │   ├── transactionController.js
-│   │   └── qrController.js   # QR generate/verify/pay
+│   │   ├── qrController.js   # QR generate/verify/pay
+│   │   └── (utils live in src/utils)
+│   ├── utils/
+│   │   └── transactionSignature.js  # Phase 5: canonical payload + Ed25519 verify
 │   ├── routes/
 │   │   ├── userRoutes.js
 │   │   ├── transactionRoutes.js
@@ -300,7 +314,9 @@ backend/
 ├── scripts/
 │   ├── demo-simple.js        # Phase 1 demonstration
 │   ├── demo-phase1.js
-│   └── demo-phase2.js        # QR flow demonstration
+│   ├── demo-phase2.js        # QR flow demonstration
+│   ├── test-signature.js     # Phase 5: Dart<->Node interop vector
+│   └── verify_receipt.js     # Phase 5: verify a receipt JSON by hand
 ├── .env.example
 ├── .env
 └── package.json
@@ -311,8 +327,13 @@ backend/
 - Transaction PINs are hashed with bcrypt on the DEVICE (Phase 4).
   `User.transactionPinHash` stays `null` forever on purpose: a PIN hash
   is an offline-crackable secret, so it never leaves the phone.
-- Private keys will never be stored on the backend (Phase 5)
-- Digital signatures will verify transaction authenticity (Phase 5)
+- Private keys never touch the backend (Phase 5): only the 32-byte
+  Ed25519 PUBLIC key travels with a receipt; the seed stays in the
+  device keystore.
+- Receipts are verified with `src/utils/transactionSignature.js`
+  (Node's built-in crypto) - the exact rules mirrored from the app's
+  `SignatureService.canonicalPayload`, pinned by the shared interop
+  vector in `scripts/test-signature.js`.
 - Double-spending protection via reconciliation (Phase 7)
 
 ## License

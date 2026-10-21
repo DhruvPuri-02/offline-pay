@@ -4,6 +4,8 @@ import '../models/transaction.dart';
 import '../models/user.dart';
 import '../services/local_database.dart';
 import '../services/pin_service.dart';
+import '../services/secure_key_store.dart';
+import '../services/signature_service.dart';
 import '../utils/balance.dart';
 import '../utils/id_generator.dart';
 import '../utils/payment_exception.dart';
@@ -20,9 +22,13 @@ import '../utils/payment_exception.dart';
 /// wallet, checking balance, reading history, paying and receiving all work
 /// with Wi-Fi and mobile data switched off.
 class WalletProvider with ChangeNotifier {
-  WalletProvider({LocalDatabase? database, DateTime Function()? clock})
-      : _db = database ?? LocalDatabase.instance,
-        _clock = clock ?? DateTime.now;
+  WalletProvider({
+    LocalDatabase? database,
+    DateTime Function()? clock,
+    SecureKeyStore? keyStore,
+  })  : _db = database ?? LocalDatabase.instance,
+        _clock = clock ?? DateTime.now,
+        _keyStore = keyStore ?? const PlatformKeyStore();
 
   /// Hard cap on a single offline payment (spec section 11, offline limit).
   /// Deliberately small: a lost/stolen device can only inject so much
@@ -40,9 +46,13 @@ class WalletProvider with ChangeNotifier {
   /// "now", so tests can fast-forward through a lockout without waiting.
   final DateTime Function() _clock;
 
+  /// Encrypted storage for the Ed25519 private key (platform keystore).
+  final SecureKeyStore _keyStore;
+
   User? _profile;
   List<Transaction> _transactions = [];
   PinRecord _pinRecord = const PinRecord();
+  String? _publicKeyBase64; // lazily loaded (Phase 5)
   bool _initialized = false;
   bool _busy = false;
   String? _error;
@@ -103,6 +113,17 @@ class WalletProvider with ChangeNotifier {
   /// is configured and the wallet is not locked).
   int get pinAttemptsRemaining =>
       PinService.maxFailedAttempts - _pinRecord.failedAttempts;
+
+  // ------------------------------------------------------------------
+  // Transaction signing state (Phase 5)
+  // ------------------------------------------------------------------
+
+  /// This wallet's Ed25519 public key (base64), or `null` before the
+  /// first payment - keys are generated lazily, never at app start.
+  String? get publicKeyBase64 => _publicKeyBase64;
+
+  /// Whether a signing key exists on this device yet.
+  bool get hasSigningKey => _publicKeyBase64 != null;
 
   List<Transaction> get sentTransactions => _transactions
       .where((tx) => tx.senderId == _profile?.userId)
@@ -284,6 +305,58 @@ class WalletProvider with ChangeNotifier {
   }
 
   // ------------------------------------------------------------------
+  // Transaction signing (Phase 5)
+  // ------------------------------------------------------------------
+
+  /// Load this device's signing key, generating it on first use.
+  ///
+  /// Lazy by design: key generation costs ~56ms and most app opens never
+  /// send a payment, so launch stays instant. The seed goes into the
+  /// encrypted [SecureKeyStore]; only the public key is cached in memory.
+  Future<void> _loadSigningKeyIfNeeded() async {
+    if (_publicKeyBase64 != null) return;
+
+    var seed = await _keyStore.read(SignatureService.privateKeySeedKey);
+    var publicKey = await _keyStore.read(SignatureService.publicKeyKey);
+
+    if (seed == null || publicKey == null) {
+      // First payment this device ever makes -> create the identity.
+      final pair = await SignatureService.generateKeyPair();
+      seed = pair.seedBase64;
+      publicKey = pair.publicKeyBase64;
+      await _keyStore.write(SignatureService.privateKeySeedKey, seed);
+      await _keyStore.write(SignatureService.publicKeyKey, publicKey);
+    }
+
+    _publicKeyBase64 = publicKey;
+  }
+
+  /// Force key creation (if needed) and return the public key, e.g. for
+  /// the UI or Phase 6 registration with the backend.
+  Future<String> ensureSigningKey() async {
+    await _loadSigningKeyIfNeeded();
+    return _publicKeyBase64!;
+  }
+
+  /// Phase 5: attach this device's signature to [tx].
+  ///
+  /// The signed message is `SignatureService.canonicalPayload(tx)` - the
+  /// tamper-evident core of the receipt. The private seed is read from
+  /// the secure key store for this call and never persisted elsewhere.
+  Future<Transaction> _signTransaction(Transaction tx) async {
+    await _loadSigningKeyIfNeeded();
+    final seed = await _keyStore.read(SignatureService.privateKeySeedKey);
+    final signature = await SignatureService.sign(
+      SignatureService.canonicalPayload(tx),
+      seedBase64: seed!,
+    );
+    return tx.signed(
+      signature: signature,
+      senderPublicKey: _publicKeyBase64!,
+    );
+  }
+
+  // ------------------------------------------------------------------
   // Payer side
   // ------------------------------------------------------------------
 
@@ -331,7 +404,7 @@ class WalletProvider with ChangeNotifier {
     // BEFORE any ledger entry exists, so a failed attempt writes nothing.
     await _verifyTransactionPin(transactionPin);
 
-    final transaction = Transaction(
+    final unsigned = Transaction(
       transactionId: IdGenerator.generateTransactionId(),
       senderId: sender.userId,
       receiverId: receiverId,
@@ -342,13 +415,14 @@ class WalletProvider with ChangeNotifier {
       status: TransactionStatus.pendingSync,
       description: description,
       nonce: nonce ?? IdGenerator.generateNonce(),
-      // --------------------------------------------------------------
-      // PHASE 5 HOOK: sign the canonical transaction fields with the
-      // sender's private key and set `senderPublicKey` + `signature`.
-      // The private key never leaves this device.
-      // --------------------------------------------------------------
       timestamp: DateTime.now(),
     );
+
+    // Phase 5: sign the canonical payment fields with this device's
+    // private key (generated lazily on the first payment, kept in the
+    // platform keystore). The signature travels with the receipt and lets
+    // the receiver - and later the backend - detect any tampering.
+    final transaction = await _signTransaction(unsigned);
 
     final inserted = await _db.insertTransaction(transaction);
     if (!inserted) {
@@ -374,6 +448,32 @@ class WalletProvider with ChangeNotifier {
     _requireInitialized();
     final me = _profile!;
 
+    // Phase 5 FIRST: verify the payer's signature before any field of the
+    // receipt is trusted. A tampered amount, receiver or nonce breaks the
+    // signature, so a hostile payer cannot hand Bob a receipt for a
+    // different payment than Alice actually signed. Unsigned receipts
+    // (pre-Phase-5 builds) are still accepted; a HALF-signed receipt is
+    // refused - that combination never leaves a real build.
+    final signature = tx.signature;
+    final publicKey = tx.senderPublicKey;
+    if (signature != null || publicKey != null) {
+      if (signature == null || publicKey == null) {
+        throw const PaymentException(
+            'Receipt has an incomplete signature. Not recorded.');
+      }
+      final valid = await SignatureService.verify(
+        SignatureService.canonicalPayload(tx),
+        signatureBase64: signature,
+        publicKeyBase64: publicKey,
+      );
+      if (!valid) {
+        throw const PaymentException(
+          'Receipt signature is invalid: this QR was tampered with or '
+          'forged. Not recorded.',
+        );
+      }
+    }
+
     if (tx.receiverId != me.userId) {
       throw const PaymentException(
           'This payment is addressed to a different wallet.');
@@ -384,13 +484,6 @@ class WalletProvider with ChangeNotifier {
     if (tx.amount <= 0) {
       throw const PaymentException('Transaction amount is invalid.');
     }
-
-    // --------------------------------------------------------------
-    // PHASE 5 HOOK: verify `tx.signature` against `tx.senderPublicKey`
-    // here. Without signatures a hostile payer could alter the amount
-    // between signing and scanning - that check is not possible yet,
-    // and the app must not claim otherwise.
-    // --------------------------------------------------------------
 
     final inserted = await _db.insertTransaction(tx);
     if (inserted) {
