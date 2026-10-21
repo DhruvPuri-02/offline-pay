@@ -1,5 +1,10 @@
 # OfflinePay - Phase 1 Complete! ✅
 
+> **Status update (October 2026): Phases 2 and 3 are also complete now.**
+> See [README.md](README.md) for current status, [SETUP.md](SETUP.md) for
+> instructions, and [docs/OFFLINE_FIRST.md](docs/OFFLINE_FIRST.md) for how
+> the offline architecture works. This file is kept as the Phase 1 record.
+
 ## 🎉 What We Built
 
 You now have a **complete Phase 1 implementation** of OfflinePay - an offline-first digital payment prototype for your college project.

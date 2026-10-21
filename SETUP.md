@@ -1,290 +1,170 @@
 # OfflinePay - Setup Guide
 
-## Quick Start (Phase 1)
+Everything below has been run and verified on Windows. Commands are shown
+from the repository root.
 
-The backend is ready to run! You can test Phase 1 without any additional installation.
-
-### Test the Demo (No MongoDB Required)
-
-```bash
-cd C:\Users\DHRUV\OneDrive\offline-pay\backend
-npm test
-```
-
-This runs a simulation showing:
-- User creation with unique IDs
-- Wallet balances
-- Money transfers
-- Transaction history
-- Balance validation
+> **Simulated money only** - this project never touches real banks or payment networks.
 
 ---
 
-## Full Backend Setup (Optional)
+## 1. Backend
 
-To run the full REST API server, you'll need MongoDB.
+### Prerequisites
+- Node.js 18+ (verified on Node 24)
 
-### Install MongoDB
-
-**Option 1: MongoDB Community Server (Recommended)**
-
-1. Download from: https://www.mongodb.com/try/download/community
-2. Run installer (choose "Complete" installation)
-3. Install as a Windows Service (check the option during setup)
-4. MongoDB will start automatically
-
-**Option 2: MongoDB Compass (GUI + Server)**
-
-1. Download from: https://www.mongodb.com/try/download/compass
-2. Includes MongoDB server with visual interface
-
-### Start the Backend Server
+### Install & run
 
 ```bash
-cd C:\Users\DHRUV\OneDrive\offline-pay\backend
-
-# Make sure MongoDB is running
-# Windows: net start MongoDB
-# Or: mongod --dbpath ./data/db
-
+cd backend
+npm install
 npm start
 ```
 
-The server will run at: `http://localhost:5000`
+**You do NOT need MongoDB installed.** If `MONGODB_URI` is empty (the
+default), the server starts an in-memory MongoDB automatically via
+`mongodb-memory-server`. Data lives until the server stops.
 
-### Test the API
+To use a real MongoDB instead, set it in `backend/.env`:
 
-**Create a user:**
-```bash
-curl -X POST http://localhost:5000/api/users -H "Content-Type: application/json" -d "{\"username\":\"alice\",\"name\":\"Alice Kumar\",\"initialBalance\":500}"
+```env
+MONGODB_URI=mongodb://127.0.0.1:27017/offlinepay
 ```
 
-**Get all users:**
-```bash
-curl http://localhost:5000/api/users
-```
+> **PowerShell note:** if you see *"running scripts is disabled on this
+> system"* for `npm.ps1`, use `npm.cmd` instead (e.g. `npm.cmd start`),
+> or run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
----
-
-## Mobile App Setup
-
-### Install Flutter
-
-1. **Download Flutter SDK**
-   - Visit: https://docs.flutter.dev/get-started/install/windows
-   - Download the Flutter SDK zip
-   - Extract to: `C:\src\flutter`
-
-2. **Add to PATH**
-   - Open "Environment Variables" in Windows
-   - Add `C:\src\flutter\bin` to your PATH
-
-3. **Install Dependencies**
-   - Android Studio: https://developer.android.com/studio
-   - Or VS Code with Flutter extension
-
-4. **Verify Installation**
-   ```bash
-   flutter doctor
-   ```
-
-### Create the Flutter Project
-
-Once Flutter is installed:
+### Verify
 
 ```bash
-cd C:\Users\DHRUV\OneDrive\offline-pay\mobile
-flutter create .
-flutter pub add http provider sqflite path_provider qr_flutter qr_code_scanner
+cd backend
+npm test           # Phase 1 demo (no database required)
 ```
+
+Then with the server running:
+
+```bash
+curl http://localhost:5000/                  # health check
+curl http://localhost:5000/api/users         # list users
+```
+
+API reference: [backend/README.md](backend/README.md)
 
 ---
 
-## Project Status
+## 2. Mobile App
 
-### ✅ Phase 1: Basic Wallet (COMPLETED)
+### Prerequisites
+- Flutter SDK 3.x (verified on 3.47.7 / Dart 3.13)
 
-**What's Working:**
-- Backend server structure
-- User/wallet models
-- Transaction models
-- REST API endpoints
-- Demo simulation
-
-**Files Created:**
-```
-backend/
-├── src/
-│   ├── config/database.js
-│   ├── models/User.js
-│   ├── models/Transaction.js
-│   ├── controllers/userController.js
-│   ├── controllers/transactionController.js
-│   ├── routes/userRoutes.js
-│   ├── routes/transactionRoutes.js
-│   └── server.js
-├── scripts/demo-simple.js
-├── .env.example
-├── package.json
-└── README.md
+```bash
+# Install (one-time), e.g. to C:\Users\<you>\flutter-sdk
+#   download: https://docs.flutter.dev/get-started/install/windows
+# add <sdk>\flutter\bin to your PATH, then:
+flutter doctor        # check what is missing on your machine
 ```
 
-### 🔄 Phase 2: QR Payments (Next)
+`flutter doctor` will flag an Android SDK (for phones/emulators) and
+Visual Studio "Desktop development with C++" (for Windows builds).
+Neither is needed for `flutter analyze` / `flutter test`.
 
-**To Do:**
-- Install Flutter SDK
-- Create mobile app UI
-- Implement QR code generation
-- Implement QR code scanning
-- Connect mobile app to backend
-- Add payment flow with confirmation
+### Build & test
+
+```bash
+cd mobile
+flutter create . --project-name offlinepay --org com.offlinepay --platforms android,windows
+flutter pub get
+flutter analyze      # must report "No issues found"
+flutter test         # 31 tests
+flutter run          # start on a connected device/emulator
+```
+
+> `flutter create .` only needs to run once (it generates the `android/`
+> and `windows/` folders). Re-running it never touches `lib/`.
+>
+> **Windows build tip:** building the app with plugins requires Developer
+> Mode (symlinks): Settings → System → For developers → Developer Mode ON.
+> `flutter analyze` and `flutter test` do not need it.
+
+### No device handy?
+
+The app also runs on Windows (wallet, ledger, balance, manual Pay flow).
+The camera scanner has a paste-JSON fallback everywhere, so the full
+payment flow is still demo-able with two desktop windows: copy the QR JSON
+from one window's "Copy transaction JSON" button and paste it into the
+other's scanner field.
 
 ---
 
-## API Reference (Phase 1)
+## 3. The Two-Device Offline Demo (the whole point of the project)
 
-### Health Check
-```
-GET http://localhost:5000/
-```
+Prerequisites: two devices/emulators (or one device + one desktop), app
+installed. **Turn Wi-Fi and mobile data OFF on both devices first.**
 
-### Users
-
-**Create User**
 ```
-POST http://localhost:5000/api/users
-Body: {
-  "username": "alice",
-  "name": "Alice Kumar",
-  "initialBalance": 1000
-}
-```
-
-**Get All Users**
-```
-GET http://localhost:5000/api/users
+1. Bob (receiver):  Receive → enter amount ₹100 → [Generate QR Code]
+2. Alice (payer):   Scan QR Code → point camera at Bob's QR
+                    (or paste the QR JSON)
+3. Alice:           verify details → [Confirm Payment]
+                    → receipt QR appears, status PENDING SYNC
+4. Bob:             Receive → [I received a payment - scan receipt]
+                    → scans Alice's receipt QR → [Record Payment]
+5. Check both apps: Home shows Available reduced (Alice) / Pending in (Bob);
+                    History shows PENDING SYNC on both sides.
+6. Restart both apps: balances and history are still there (SQLite).
 ```
 
-**Get User**
-```
-GET http://localhost:5000/api/users/:id
-```
-
-**Add Balance**
-```
-POST http://localhost:5000/api/users/:id/topup
-Body: {
-  "amount": 500
-}
-```
-
-### Transactions
-
-**Create Transfer**
-```
-POST http://localhost:5000/api/transactions/transfer
-Body: {
-  "senderId": "USER_abc123",
-  "receiverId": "USER_xyz789",
-  "amount": 100,
-  "description": "Payment"
-}
-```
-
-**Get Transaction History**
-```
-GET http://localhost:5000/api/transactions/user/:id
-```
-
-**Get Transaction**
-```
-GET http://localhost:5000/api/transactions/:transactionId
-```
+Pay-a-friend variant (payer initiates): **Pay** → recipient ID + amount →
+Continue → Alice shows a receipt QR → Bob records it in step 4 above.
 
 ---
 
-## Development Workflow
+## 4. Project Status
 
-### Working on Backend
+### ✅ Phase 1 - Basic Wallet (backend)
+Users, simulated balances, transfers, history, topups, demo scripts.
 
-1. Make code changes in `src/`
-2. Test with: `npm test` (demo) or `npm start` (server)
-3. Use Postman/curl to test API endpoints
+### ✅ Phase 2 - QR Payments
+Payment-request QR generation, camera + paste scanning, payment
+confirmation, receipt QR hand-off back to the receiver.
 
-### Working on Mobile (Phase 2+)
+### ✅ Phase 3 - Offline Mode
+SQLite wallet + ledger, boot from local storage, `PENDING_SYNC`
+transactions, pending-sync queue API for Phase 6, three-balance display
+(available / confirmed / pending), local double-spend controls
+(reservation + ₹500 offline cap).
 
-1. Start backend: `npm start`
-2. Run Flutter app: `flutter run`
-3. Test on emulator or physical device
-
----
-
-## Troubleshooting
-
-### MongoDB Connection Error
-
-**Problem:** Server can't connect to MongoDB
-
-**Solution:**
-- Check if MongoDB service is running: `net start MongoDB`
-- Or start manually: `mongod --dbpath ./data/db`
-- Check connection string in `.env`
-
-### Port Already in Use
-
-**Problem:** Port 5000 is already in use
-
-**Solution:**
-- Change port in `.env`: `PORT=5001`
-- Or stop the other process using port 5000
-
-### Flutter Not Found
-
-**Problem:** `flutter: command not found`
-
-**Solution:**
-- Install Flutter SDK
-- Add Flutter to PATH
-- Restart terminal/command prompt
+### 🔄 Next: Phase 4 - Transaction PIN
+Extension points are already marked in
+`mobile/lib/providers/wallet_provider.dart` (`PHASE 4 HOOK`, `PHASE 5 HOOK`).
 
 ---
 
-## Next Steps
+## 5. Troubleshooting
 
-1. ✅ Backend Phase 1 is complete and tested
-2. ⏳ Install MongoDB (optional, for full server)
-3. ⏳ Install Flutter SDK
-4. ⏳ Create mobile app UI
-5. ⏳ Implement Phase 2 (QR payments)
-
----
-
-## Important Reminders
-
-⚠️ **SIMULATED MONEY ONLY**
-- This is an educational project
-- NOT connected to real banks
-- NOT using real money
-- For learning purposes only
-
-🔒 **Security Notes**
-- Current phase uses simulated security
-- PIN hashing comes in Phase 4
-- Cryptographic signing comes in Phase 5
-- Not production-ready
+| Problem | Fix |
+|---|---|
+| `npm.ps1 cannot be loaded` | Use `npm.cmd start`, or set execution policy (above) |
+| Backend: "MongoDB Connection Error" | Leave `MONGODB_URI` empty to use the in-memory database |
+| Port 5000 already in use | Change `PORT` in `backend/.env` |
+| `flutter: command not found` | Add `<sdk>\flutter\bin` to PATH, restart terminal |
+| Camera does not open | Grant permission, or use the paste-JSON field (works everywhere) |
+| Windows build: "requires symlink support" | Enable Windows Developer Mode |
+| App cannot reach backend on a phone | Use your PC's LAN IP in `mobile/lib/services/api_service.dart` (`baseUrl`); the offline flow does not need this |
 
 ---
 
-## Resources
+## 6. Documentation
 
-- **MongoDB Tutorial**: https://www.mongodb.com/docs/manual/tutorial/
-- **Express.js Guide**: https://expressjs.com/en/guide/routing.html
-- **Flutter Documentation**: https://docs.flutter.dev/
-- **QR Code in Flutter**: https://pub.dev/packages/qr_flutter
+- **[docs/OFFLINE_FIRST.md](docs/OFFLINE_FIRST.md)** - SQLite schema, QR
+  message protocol, sync flow, honest double-spend limitations
+- **[docs/GUIDE.md](docs/GUIDE.md)** - all 8 phases, design concepts
+- **[backend/README.md](backend/README.md)** - API + Mongo schema
 
 ---
 
-**Project**: OfflinePay  
-**Current Phase**: Phase 1 Complete ✅  
-**Next Phase**: Phase 2 - QR Payments  
+**Project**: OfflinePay
+**Status**: Phases 1-3 complete
 **Date**: October 2026
+
+**⚠️ SIMULATED MONEY ONLY - Educational Project**

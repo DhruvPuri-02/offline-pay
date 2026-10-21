@@ -54,32 +54,36 @@ Alice (₹500)  ──[QR Code]──>  Bob (Merchant)
 
 **Status**: Backend implemented and tested
 
-### 🔄 Phase 2: QR Payment (NEXT)
+### ✅ Phase 2: QR Payment (COMPLETED)
 **Goal**: Enable payments via QR codes
 
-**Features**:
-- Generate payment QR code
-- Scan QR code
-- Confirm payment details
-- Transfer simulated money
-- Local transaction storage
+**Implemented**:
+- Payment-request QR generation on the receiver's device (Receive screen)
+- QR scanning via camera (`mobile_scanner`) with a paste-JSON fallback
+- Payment confirmation screen with balance preview
+- Transaction created locally with status `PENDING_SYNC`
+- Receipt QR handed back so the receiver can record the incoming payment
+- Two message types defined in `mobile/lib/models/qr_message.dart`
+  (`PAYMENT_REQUEST`, `TRANSACTION_RECEIPT`)
 
-**Implementation**:
-- QR contains: merchant ID, amount, transaction ID, timestamp
-- Payer scans and confirms
-- Transaction recorded locally on both devices
+**See**: `docs/OFFLINE_FIRST.md` section 4 for the full message flow.
 
-### 🔄 Phase 3: Offline Mode
+### ✅ Phase 3: Offline Mode (COMPLETED)
 **Goal**: Remove internet dependency
 
-**Features**:
-- Local wallet storage
-- Local transaction ledger
-- Pending transaction queue
-- Offline balance calculation
-- Sync when connectivity returns
+**Implemented**:
+- SQLite wallet + ledger (`mobile/lib/services/local_database.dart`)
+- App boots from local storage before the first frame - no network calls
+  in the payment path
+- Pending-sync queue exposed (`pendingSyncTransactions`) with status
+  persistence helpers for Phase 6
+- Offline balance calculation with the three-balance split
+  (available / confirmed / pending) in `mobile/lib/utils/balance.dart`
+- First-half of double-spend controls: local balance reservation and a
+  per-transaction offline cap (server-side arbitration arrives in Phase 6/7)
 
-**Key Challenge**: Maintain data consistency without central server
+**Key design choice**: incoming pending payments do NOT raise the available
+balance - see `docs/OFFLINE_FIRST.md` section 5 for why.
 
 ### 🔄 Phase 4: Transaction PIN
 **Goal**: Secure payment authorization
@@ -245,6 +249,10 @@ Signature → Verify with Public Key → Valid/Invalid
 
 ### 4. Synchronization Flow
 
+> Implemented so far: the local pending queue and status storage
+> (`LocalDatabase.getPendingSyncTransactions`, `updateTransactionStatus`).
+> The upload endpoint below is Phase 6.
+
 ```
 Device                              Backend
   │                                    │
@@ -338,19 +346,13 @@ Device                              Backend
 
 ## Getting Started
 
-### Backend Setup
-```bash
-cd backend
-npm install
-npm test        # Run Phase 1 demo
-npm start       # Start server (needs MongoDB)
-```
+See **[SETUP.md](../SETUP.md)** for verified, step-by-step instructions
+including the two-device offline demo. Implementation details of the
+current offline architecture are in **[OFFLINE_FIRST.md](OFFLINE_FIRST.md)**.
 
-### Mobile Setup (requires Flutter)
 ```bash
-cd mobile
-flutter pub get
-flutter run
+cd backend && npm install && npm start   # server (MongoDB optional)
+cd mobile  && flutter pub get && flutter run
 ```
 
 ## Next Steps
