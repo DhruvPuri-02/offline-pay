@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../providers/wallet_provider.dart';
 import '../utils/payment_exception.dart';
+import 'pin_authorization_screen.dart';
 import 'show_transaction_qr_screen.dart';
 
 /// Manual payment path (spec section 15): the payer types WHO and HOW MUCH.
@@ -46,18 +47,27 @@ class _PayScreenState extends State<PayScreen> {
 
     setState(() => _submitting = true);
     try {
-      // Phase 4 inserts the transaction PIN step HERE (after the user
-      // confirms, before the transaction is created).
-      final tx = await wallet.createOfflinePayment(
-        receiverId: recipient,
-        receiverWalletId: recipient, // wallet ID works too; backend sync resolves both
-        amount: amount,
-        description: _descriptionController.text.trim().isEmpty
-            ? 'Payment'
-            : _descriptionController.text.trim(),
+      // Phase 4: the PIN gate sits exactly where the spec puts it - after
+      // confirmation, before the transaction exists. `onAttempt` runs the
+      // payment; the screen handles PIN entry, lockout and error display.
+      final tx = await PinAuthorizationScreen.open(
+        context,
+        summary: {
+          'To': recipient,
+          'Amount': '₹${amount.toStringAsFixed(2)}',
+        },
+        onAttempt: (pin) => wallet.createOfflinePayment(
+          receiverId: recipient,
+          receiverWalletId: recipient, // wallet ID works too; backend sync resolves both
+          amount: amount,
+          description: _descriptionController.text.trim().isEmpty
+              ? 'Payment'
+              : _descriptionController.text.trim(),
+          transactionPin: pin,
+        ),
       );
+      if (tx == null || !mounted) return;
 
-      if (!mounted) return;
       // Replace so "back" from the QR screen goes Home, not back to the
       // filled-in form (which would risk re-submitting the same payment).
       Navigator.pushReplacement(
@@ -67,6 +77,8 @@ class _PayScreenState extends State<PayScreen> {
         ),
       );
     } on PaymentException catch (e) {
+      // Normally handled inside the PIN screen; kept as a safety net so
+      // a rare escaped error still reaches the user visibly.
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

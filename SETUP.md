@@ -75,7 +75,7 @@ cd mobile
 flutter create . --project-name offlinepay --org com.offlinepay --platforms android,windows
 flutter pub get
 flutter analyze      # must report "No issues found"
-flutter test         # 31 tests
+flutter test         # 57 tests
 flutter run          # start on a connected device/emulator
 ```
 
@@ -106,6 +106,8 @@ installed. **Turn Wi-Fi and mobile data OFF on both devices first.**
 2. Alice (payer):   Scan QR Code → point camera at Bob's QR
                     (or paste the QR JSON)
 3. Alice:           verify details → [Confirm Payment]
+                    → FIRST TIME: create a 4-6 digit transaction PIN;
+                      later payments: enter that PIN
                     → receipt QR appears, status PENDING SYNC
 4. Bob:             Receive → [I received a payment - scan receipt]
                     → scans Alice's receipt QR → [Record Payment]
@@ -134,9 +136,16 @@ transactions, pending-sync queue API for Phase 6, three-balance display
 (available / confirmed / pending), local double-spend controls
 (reservation + ₹500 offline cap).
 
-### 🔄 Next: Phase 4 - Transaction PIN
+### ✅ Phase 4 - Transaction PIN
+First payment asks you to create a 4-6 digit PIN (stored only as a
+salted bcrypt hash); every payment after that verifies it before the
+transaction is written. Wrong PINs are counted - 5 failures lock
+payments for 30 seconds. The key icon on the Home app bar opens the
+PIN settings (status, change PIN, lockout countdown).
+
+### 🔄 Next: Phase 5 - Cryptographic signatures
 Extension points are already marked in
-`mobile/lib/providers/wallet_provider.dart` (`PHASE 4 HOOK`, `PHASE 5 HOOK`).
+`mobile/lib/providers/wallet_provider.dart` (`PHASE 5 HOOK`).
 
 ---
 

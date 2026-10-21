@@ -16,7 +16,7 @@ and double-spend controls.
 - ✅ Phase 1: Basic wallet with simulated money (backend + demo)
 - ✅ Phase 2: QR code payments (two-message protocol, camera + paste scanning)
 - ✅ Phase 3: Offline-first architecture (SQLite ledger, pending-sync queue)
-- 🔄 Phase 4: Transaction PIN security (next)
+- ✅ Phase 4: Transaction PIN security (bcrypt hashing, 5-attempt lockout)
 - 🔄 Phase 5: Cryptographic signatures
 - 🔄 Phase 6: Backend synchronization
 - 🔄 Phase 7: Double-spending protection (local half done: reservation + offline cap)
@@ -36,7 +36,8 @@ and double-spend controls.
 ### Security
 - Unique transaction IDs and nonces (replay protection)
 - Local balance reservation + offline spending limits
-- PIN hashing, digital signatures: later phases (4 and 5)
+- Transaction PIN: salted bcrypt hash + temporary lockout (device-local, Phase 4)
+- Digital signatures: Phase 5
 
 ## What Works Right Now
 

@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart' hide Transaction;
 
 import '../models/transaction.dart';
 import '../models/user.dart';
+import 'pin_service.dart';
 
 /// Local SQLite storage - the heart of the offline-first design.
 ///
@@ -36,7 +37,7 @@ class LocalDatabase {
   final String? _pathOverride;
   Database? _db;
 
-  static const int _schemaVersion = 1;
+  static const int _schemaVersion = 2;
 
   Future<Database> get database async {
     if (_db != null) return _db!;
@@ -56,7 +57,22 @@ class LocalDatabase {
       path,
       version: _schemaVersion,
       onCreate: _createSchema,
+      onUpgrade: _upgradeSchema,
     );
+  }
+
+  /// v1 -> v2: Phase 4 added PIN columns to the wallet profile.
+  ///
+  /// `ALTER TABLE ... ADD COLUMN` is the standard SQLite migration: it is
+  /// additive, so existing profiles and ledgers survive untouched.
+  Future<void> _upgradeSchema(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('ALTER TABLE wallet_profile ADD COLUMN pin_hash TEXT');
+      await db.execute(
+        'ALTER TABLE wallet_profile ADD COLUMN pin_failed_attempts INTEGER NOT NULL DEFAULT 0',
+      );
+      await db.execute('ALTER TABLE wallet_profile ADD COLUMN pin_locked_until TEXT');
+    }
   }
 
   Future<void> _createSchema(Database db, int version) async {
@@ -66,16 +82,23 @@ class LocalDatabase {
     // offline payments are NOT subtracted here - they are derived from
     // the ledger at runtime, so the raw confirmed figure stays intact
     // for reconciliation.
+    //
+    // PIN columns (Phase 4): only the bcrypt HASH is stored, plus the
+    // failed-attempt/lockout counters that enforce brute-force limits.
+    // The plaintext PIN is never written anywhere.
     // ---------------------------------------------------------------
     await db.execute('''
       CREATE TABLE wallet_profile (
-        user_id           TEXT PRIMARY KEY,
-        username          TEXT NOT NULL,
-        name              TEXT NOT NULL,
-        wallet_id         TEXT NOT NULL UNIQUE,
-        confirmed_balance REAL NOT NULL DEFAULT 0,
-        public_key        TEXT,
-        created_at        TEXT NOT NULL
+        user_id             TEXT PRIMARY KEY,
+        username            TEXT NOT NULL,
+        name                TEXT NOT NULL,
+        wallet_id           TEXT NOT NULL UNIQUE,
+        confirmed_balance   REAL NOT NULL DEFAULT 0,
+        public_key          TEXT,
+        created_at          TEXT NOT NULL,
+        pin_hash            TEXT,
+        pin_failed_attempts INTEGER NOT NULL DEFAULT 0,
+        pin_locked_until    TEXT
       )
     ''');
 
@@ -168,6 +191,59 @@ class LocalDatabase {
       where: 'user_id = ?',
       whereArgs: [userId],
     );
+  }
+
+  // ------------------------------------------------------------------
+  // Transaction PIN (Phase 4) - hash + attempt counters only
+  // ------------------------------------------------------------------
+
+  Future<PinRecord> getPinRecord() async {
+    final db = await database;
+    final rows = await db.query(
+      'wallet_profile',
+      columns: ['pin_hash', 'pin_failed_attempts', 'pin_locked_until'],
+      limit: 1,
+    );
+    if (rows.isEmpty) return const PinRecord();
+
+    final row = rows.first;
+    final lockedRaw = row['pin_locked_until'] as String?;
+    return PinRecord(
+      hash: row['pin_hash'] as String?,
+      failedAttempts: (row['pin_failed_attempts'] as num?)?.toInt() ?? 0,
+      lockedUntil: lockedRaw == null ? null : DateTime.parse(lockedRaw),
+    );
+  }
+
+  /// Store the PIN hash. Passing `null` clears the PIN.
+  /// Setting a (new) PIN also resets the lockout and attempt counters.
+  Future<void> savePinHash(String? hash) async {
+    final db = await database;
+    await db.update(
+      'wallet_profile',
+      {
+        'pin_hash': hash,
+        'pin_failed_attempts': 0,
+        'pin_locked_until': null,
+      },
+    );
+  }
+
+  /// Persist a failed attempt (or a fresh lockout).
+  Future<void> savePinAttempts(int attempts, DateTime? lockedUntil) async {
+    final db = await database;
+    await db.update(
+      'wallet_profile',
+      {
+        'pin_failed_attempts': attempts,
+        'pin_locked_until': lockedUntil?.toIso8601String(),
+      },
+    );
+  }
+
+  /// Successful verification: forget failures and lift any lock.
+  Future<void> clearPinFailures() async {
+    await savePinAttempts(0, null);
   }
 
   // ------------------------------------------------------------------

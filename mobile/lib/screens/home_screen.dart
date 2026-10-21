@@ -4,6 +4,7 @@ import '../providers/wallet_provider.dart';
 import '../widgets/balance_card.dart';
 import '../widgets/quick_action_button.dart';
 import '../widgets/recent_transactions.dart';
+import 'pin_settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -32,6 +33,22 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('OfflinePay'),
         actions: [
+          IconButton(
+            tooltip: 'Transaction PIN settings',
+            icon: Icon(
+              Icons.key,
+              // Subtle hint that protection is (not yet) active.
+              color: context.watch<WalletProvider>().hasTransactionPin
+                  ? null
+                  : Colors.grey,
+            ),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const PinSettingsScreen()),
+              );
+            },
+          ),
           IconButton(
             tooltip: 'Reload local ledger',
             icon: const Icon(Icons.refresh),

@@ -1,4 +1,4 @@
-# OfflinePay - Offline-First Design (Implemented, Phases 2-3)
+# OfflinePay - Offline-First Design (Implemented, Phases 2-4)
 
 This document describes **what the code actually does today**, not what is
 planned. Planned work is marked clearly as such.
@@ -166,7 +166,49 @@ guarantees as a banking system and must not be described as if it did.
 
 ---
 
-## 6. Synchronization flow (partially implemented)
+## 6. Transaction PIN (Phase 4, implemented)
+
+Implemented in `mobile/lib/services/pin_service.dart` +
+`WalletProvider`; UI in `screens/pin_authorization_screen.dart` and
+`screens/pin_settings_screen.dart`.
+
+**What the PIN is for**: authorising OUTGOING payments on this device.
+The app itself opens with no prompt - there is deliberately no login PIN.
+
+**How it is enforced**: `createOfflinePayment()` verifies the PIN
+*inside the operation that moves money* - after the balance checks, so
+an impossible payment never consumes a PIN attempt, and before any
+ledger write, so a failed attempt leaves no trace. No other code path
+writes payments into the ledger, so nothing can bypass the check.
+
+**Storage** (`wallet_profile` table, SQLite schema v2):
+- `pin_hash` - a salted bcrypt hash (cost 10, the library default:
+  ~80ms per verification measured on a desktop). The plaintext PIN is
+  never written, logged, or sent anywhere.
+- `pin_failed_attempts`, `pin_locked_until` - brute-force counters.
+
+**Brute-force policy**: 5 failed attempts -> 30 seconds lockout. While
+locked, even the CORRECT PIN is refused; after the cooldown the attempt
+budget starts fresh. A success resets the counter. Counters live in
+SQLite, so restarting the app does not help an attacker.
+
+**Bootstrap**: on the very first payment the PIN screen is in setup
+mode (create + confirm); from then on, every payment verifies it.
+Changing the PIN (settings screen, key icon on the Home app bar)
+requires the current PIN.
+
+### Honest limitations of the PIN
+
+| Claim | Reality |
+|---|---|
+| "Only the owner can pay" | ❌ The hash lives on the same device; anyone with root/malware could extract it and brute-force a 4-digit space offline. The PIN deters *casual* misuse of an unlocked phone, not a forensic attacker. |
+| "5 attempts total" | ❌ 5 attempts per 30-second window (~5 guesses per ~30s). Rate-limiting makes guessing slow, not impossible. |
+| "The backend knows my PIN" | ❌ by design. `User.transactionPinHash` on the backend stays `null` forever - syncing a PIN hash to a server only creates another copy to steal. |
+| "bcrypt makes PINs strong" | ❌ bcrypt makes *verification* expensive and per-PIN salts defeat precomputation; it cannot make a 4-digit PIN high-entropy. Real authenticity weight arrives with Phase 5 signatures. |
+
+---
+
+## 7. Synchronization flow (partially implemented)
 
 **Implemented today (Phase 3):**
 - Transactions are created as `PENDING_SYNC` and persisted.
@@ -196,7 +238,7 @@ and balance checks on every credit/debit.
 
 ---
 
-## 7. Testing
+## 8. Testing
 
 | Suite | What it proves |
 |---|---|
@@ -204,9 +246,12 @@ and balance checks on every credit/debit.
 | `test/local_database_test.dart` | Insert-twice is a no-op; nonce replay rejected; NULL nonces allowed; status persistence |
 | `test/wallet_provider_test.dart` | First-run seeding, PENDING_SYNC creation, balance reservation, receipt idempotency, wrong-wallet rejection |
 | `test/qr_message_test.dart` | Receipt round-trip; malformed QRs produce readable errors |
+| `test/pin_service_test.dart` | Format rules; salted hashes (same PIN -> different hash); fail-closed on corrupt hashes |
+| `test/wallet_provider_pin_test.dart` | Hash-only storage; PIN enforced inside `createOfflinePayment`; attempt counting; lockout incl. clock-driven expiry; change-PIN rules |
+| `test/pin_authorization_screen_test.dart` | Setup vs verify modes, mismatch handling, locked-state UI (fake wallet, no SQLite in FakeAsync) |
 | `test/widget_test.dart` | Home screen boots from SQLite alone and renders the balances |
 
-Run: `cd mobile && flutter test` (31 tests, ~2s).
+Run: `cd mobile && flutter test` (57 tests, a few seconds).
 
 Backend: `cd backend && npm test` (runs without MongoDB), or `npm start`
 (now also runs without MongoDB via `mongodb-memory-server`).

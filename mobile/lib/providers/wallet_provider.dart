@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../models/transaction.dart';
 import '../models/user.dart';
 import '../services/local_database.dart';
+import '../services/pin_service.dart';
 import '../utils/balance.dart';
 import '../utils/id_generator.dart';
 import '../utils/payment_exception.dart';
@@ -19,8 +20,9 @@ import '../utils/payment_exception.dart';
 /// wallet, checking balance, reading history, paying and receiving all work
 /// with Wi-Fi and mobile data switched off.
 class WalletProvider with ChangeNotifier {
-  WalletProvider({LocalDatabase? database})
-      : _db = database ?? LocalDatabase.instance;
+  WalletProvider({LocalDatabase? database, DateTime Function()? clock})
+      : _db = database ?? LocalDatabase.instance,
+        _clock = clock ?? DateTime.now;
 
   /// Hard cap on a single offline payment (spec section 11, offline limit).
   /// Deliberately small: a lost/stolen device can only inject so much
@@ -34,8 +36,13 @@ class WalletProvider with ChangeNotifier {
 
   final LocalDatabase _db;
 
+  /// Injectable time source: the lockout rules are pure functions of
+  /// "now", so tests can fast-forward through a lockout without waiting.
+  final DateTime Function() _clock;
+
   User? _profile;
   List<Transaction> _transactions = [];
+  PinRecord _pinRecord = const PinRecord();
   bool _initialized = false;
   bool _busy = false;
   String? _error;
@@ -77,6 +84,26 @@ class WalletProvider with ChangeNotifier {
   List<Transaction> get pendingSyncTransactions =>
       _transactions.where((tx) => _isUnsettled(tx)).toList();
 
+  // ------------------------------------------------------------------
+  // Transaction PIN state (Phase 4)
+  // ------------------------------------------------------------------
+
+  /// Whether a transaction PIN has been created on this device.
+  bool get hasTransactionPin => _pinRecord.isConfigured;
+
+  /// Time left in the current lockout (zero when not locked).
+  Duration get pinLockRemaining {
+    final until = _pinRecord.lockedUntil;
+    if (until == null) return Duration.zero;
+    final remaining = until.difference(_clock());
+    return remaining.isNegative ? Duration.zero : remaining;
+  }
+
+  /// Failed attempts left before lockout (only meaningful when a PIN
+  /// is configured and the wallet is not locked).
+  int get pinAttemptsRemaining =>
+      PinService.maxFailedAttempts - _pinRecord.failedAttempts;
+
   List<Transaction> get sentTransactions => _transactions
       .where((tx) => tx.senderId == _profile?.userId)
       .toList();
@@ -109,6 +136,7 @@ class WalletProvider with ChangeNotifier {
 
       _profile = profile;
       _transactions = await _db.getTransactions();
+      _pinRecord = await _db.getPinRecord();
       _initialized = true;
     } catch (e) {
       _error = 'Failed to open local wallet: $e';
@@ -125,6 +153,7 @@ class WalletProvider with ChangeNotifier {
     if (profile == null) return;
     _profile = profile;
     _transactions = await _db.getTransactions();
+    _pinRecord = await _db.getPinRecord();
     notifyListeners();
   }
 
@@ -161,14 +190,116 @@ class WalletProvider with ChangeNotifier {
   }
 
   // ------------------------------------------------------------------
+  // Transaction PIN (Phase 4)
+  // ------------------------------------------------------------------
+
+  /// Create the device's transaction PIN (first payment does this before
+  /// the payment is allowed through).
+  Future<void> setTransactionPin(String pin) async {
+    _requireInitialized();
+    final formatError = PinService.validateFormat(pin);
+    if (formatError != null) throw PaymentException(formatError);
+
+    // Hashing is CPU-bound (~80ms at cost 10) - kept synchronous inside
+    // this async call so the UI can show its busy state around it.
+    await _db.savePinHash(PinService.hash(pin));
+    _pinRecord = await _db.getPinRecord();
+    notifyListeners();
+  }
+
+  /// Change the PIN: current PIN must verify first.
+  Future<void> changeTransactionPin({
+    required String currentPin,
+    required String newPin,
+  }) async {
+    await _verifyTransactionPin(currentPin); // throws on wrong/locked
+    final formatError = PinService.validateFormat(newPin);
+    if (formatError != null) throw PaymentException(formatError);
+
+    await _db.savePinHash(PinService.hash(newPin));
+    _pinRecord = await _db.getPinRecord();
+    notifyListeners();
+  }
+
+  /// Verify [pin] against the stored hash, applying the brute-force policy.
+  ///
+  /// Throws [PaymentException] with a user-facing reason on failure.
+  /// Success clears the failed-attempt counter.
+  ///
+  /// When NO PIN has been configured yet this returns silently: nothing
+  /// to verify. The UI always forces `setTransactionPin()` before the
+  /// first payment, so the bootstrap window never applies to real usage.
+  Future<void> _verifyTransactionPin(String? pin) async {
+    final record = await _db.getPinRecord();
+    _pinRecord = record;
+    if (!record.isConfigured) return;
+
+    final now = _clock();
+
+    // Lockout check comes first and ignores the entered value entirely:
+    // while locked, even the correct PIN must not work.
+    final lockedUntil = record.lockedUntil;
+    if (lockedUntil != null && now.isBefore(lockedUntil)) {
+      throw PaymentException(
+        'Too many failed attempts. Payments locked for '
+        '${lockedUntil.difference(now).inSeconds} more seconds.',
+      );
+    }
+
+    if (pin == null) {
+      throw const PaymentException('Transaction PIN required.');
+    }
+    final formatError = PinService.validateFormat(pin);
+    if (formatError != null) throw PaymentException(formatError);
+
+    if (PinService.verify(pin, record.hash!)) {
+      await _db.clearPinFailures();
+      _pinRecord = await _db.getPinRecord();
+      notifyListeners();
+      return;
+    }
+
+    // Wrong PIN: count it. At the limit, start a lockout with a FRESH
+    // counter so that after the cooldown the user gets a new set of
+    // attempts (otherwise the next mistake would re-lock instantly).
+    final attempts = record.failedAttempts + 1;
+    if (attempts >= PinService.maxFailedAttempts) {
+      final until = now.add(PinService.lockoutDuration);
+      await _db.savePinAttempts(0, until);
+      _pinRecord = await _db.getPinRecord();
+      notifyListeners();
+      throw PaymentException(
+        'Too many failed attempts. Payments locked for '
+        '${PinService.lockoutDuration.inSeconds} seconds.',
+      );
+    }
+
+    await _db.savePinAttempts(attempts, null);
+    _pinRecord = await _db.getPinRecord();
+    notifyListeners();
+    throw PaymentException(
+      'Incorrect transaction PIN. '
+      '${PinService.maxFailedAttempts - attempts} attempt(s) left.',
+    );
+  }
+
+  // ------------------------------------------------------------------
   // Payer side
   // ------------------------------------------------------------------
 
   /// Create an offline payment from this device.
   ///
-  /// Flow (spec section 6): validate -> create -> store in local ledger.
+  /// Flow (spec section 6, adapted for Phase 4):
+  ///   validate balance -> verify transaction PIN -> create -> store in
+  ///   the local ledger.
+  ///
   /// The transaction is ALWAYS created as PENDING_SYNC: only the backend,
   /// during Phase 6, may declare it CONFIRMED.
+  ///
+  /// [transactionPin] is verified here - inside the operation that moves
+  /// money - so no other code path can create a payment while skipping
+  /// the PIN check. The plaintext PIN is used for this call only: it is
+  /// compared against the stored bcrypt hash and never persisted.
   ///
   /// Throws [PaymentException] with a user-facing reason when refused.
   Future<Transaction> createOfflinePayment({
@@ -177,10 +308,14 @@ class WalletProvider with ChangeNotifier {
     required double amount,
     String description = 'Payment',
     String? nonce,
+    String? transactionPin,
   }) async {
     _requireInitialized();
     final sender = _profile!;
 
+    // Cheap, PIN-independent checks first - never ask for a PIN that
+    // could not be used anyway (and never waste an attempt on a payment
+    // that would be refused regardless).
     final decision = validateOfflinePayment(
       amount: amount,
       available: availableBalance,
@@ -192,12 +327,9 @@ class WalletProvider with ChangeNotifier {
       throw PaymentException(decision.reason!);
     }
 
-    // --------------------------------------------------------------
-    // PHASE 4 HOOK: verify the transaction PIN here, BEFORE anything
-    // is written. Verify against a salted hash (never plaintext), then
-    // apply failed-attempt lockout. Nothing below this line should run
-    // unless the PIN check passes.
-    // --------------------------------------------------------------
+    // Phase 4: PIN verification (lockout policy included). This happens
+    // BEFORE any ledger entry exists, so a failed attempt writes nothing.
+    await _verifyTransactionPin(transactionPin);
 
     final transaction = Transaction(
       transactionId: IdGenerator.generateTransactionId(),

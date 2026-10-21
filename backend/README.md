@@ -200,7 +200,7 @@ Responses:
   walletId: String (unique),
   balance: Number,
   publicKey: String (for Phase 5),
-  transactionPinHash: String (for Phase 4),
+  transactionPinHash: String (stays null by design - see Security Notes),
   createdAt: Date,
   updatedAt: Date
 }
@@ -272,7 +272,7 @@ This creates sample users (Alice, Bob, Charlie) and demonstrates transfers betwe
 - [x] **Phase 1**: Basic wallet system
 - [x] **Phase 2**: QR endpoints + replay protection (backend side)
 - [x] **Phase 3**: Offline-first mobile app (backend unchanged)
-- [ ] **Phase 4**: Transaction PIN security
+- [x] **Phase 4**: Transaction PIN security (app-side only; PIN never syncs)
 - [ ] **Phase 5**: Cryptographic signatures
 - [ ] **Phase 6**: Backend synchronization (upload/verify/reconcile endpoint)
 - [ ] **Phase 7**: Double-spending protection (server-side arbitration)
@@ -308,7 +308,9 @@ backend/
 
 ## Security Notes (for later phases)
 
-- Transaction PINs will be hashed with bcrypt (Phase 4)
+- Transaction PINs are hashed with bcrypt on the DEVICE (Phase 4).
+  `User.transactionPinHash` stays `null` forever on purpose: a PIN hash
+  is an offline-crackable secret, so it never leaves the phone.
 - Private keys will never be stored on the backend (Phase 5)
 - Digital signatures will verify transaction authenticity (Phase 5)
 - Double-spending protection via reconciliation (Phase 7)

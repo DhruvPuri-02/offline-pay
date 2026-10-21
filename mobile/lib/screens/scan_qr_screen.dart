@@ -6,6 +6,7 @@ import '../models/qr_payload.dart';
 import '../providers/wallet_provider.dart';
 import '../utils/payment_exception.dart';
 import '../widgets/qr_scanner_view.dart';
+import 'pin_authorization_screen.dart';
 import 'show_transaction_qr_screen.dart';
 
 /// Payer side of the receiver-initiated flow (spec section 6):
@@ -65,25 +66,34 @@ class _ScanQRScreenState extends State<ScanQRScreen> {
     setState(() => _submitting = true);
 
     try {
-      // Phase 4: the transaction PIN prompt goes HERE, before creation.
-      //
-      // Note the nonce: it comes from Bob's request QR, so paying the same
-      // request twice produces the same nonce - and the backend's unique
-      // index rejects the second one at sync time.
-      final tx = await wallet.createOfflinePayment(
-        receiverId: request.receiverId,
-        receiverWalletId: request.receiverWalletId,
-        amount: request.amount,
-        description: request.description,
-        nonce: request.nonce,
+      // Phase 4: PIN gate before creation. The nonce comes from Bob's
+      // request QR, so paying the same request twice produces the same
+      // nonce - and the backend's unique index rejects the second one at
+      // sync time (Phase 6).
+      final tx = await PinAuthorizationScreen.open(
+        context,
+        summary: {
+          'To': request.receiverName,
+          'Amount': '₹${request.amount.toStringAsFixed(2)}',
+          'Description': request.description,
+        },
+        onAttempt: (pin) => wallet.createOfflinePayment(
+          receiverId: request.receiverId,
+          receiverWalletId: request.receiverWalletId,
+          amount: request.amount,
+          description: request.description,
+          nonce: request.nonce,
+          transactionPin: pin,
+        ),
       );
+      if (tx == null || !mounted) return;
 
-      if (!mounted) return;
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => ShowTransactionQRScreen(transaction: tx)),
       );
     } on PaymentException catch (e) {
+      // Normally handled inside the PIN screen; safety net otherwise.
       _showError(e.reason);
     } finally {
       if (mounted) setState(() => _submitting = false);

@@ -85,17 +85,29 @@ Alice (₹500)  ──[QR Code]──>  Bob (Merchant)
 **Key design choice**: incoming pending payments do NOT raise the available
 balance - see `docs/OFFLINE_FIRST.md` section 5 for why.
 
-### 🔄 Phase 4: Transaction PIN
+### ✅ Phase 4: Transaction PIN
 **Goal**: Secure payment authorization
 
-**Features**:
-- Set transaction PIN (NOT login PIN)
-- PIN required before payment
-- Secure PIN hashing (bcrypt)
-- Failed attempt protection
-- Temporary lockout mechanism
+**What was built**:
+- Device-local transaction PIN (NOT a login PIN - the app opens with no
+  prompt, spec section 5)
+- Setup flow on the very first payment (create + confirm), change flow
+  in the settings screen (key icon on the Home app bar, requires the
+  current PIN)
+- Verification happens **inside** `createOfflinePayment()` - after the
+  balance checks (an impossible payment never burns an attempt) and
+  before any ledger write (a failed attempt leaves no trace)
+- Salted bcrypt hashing via the established `bcrypt` package; the
+  plaintext PIN is never stored, logged, or sent anywhere
+- 5 failed attempts -> 30 second lockout; while locked even the correct
+  PIN is refused; counters persist in SQLite across restarts
+- SQLite schema v2 migration adds `pin_hash`, `pin_failed_attempts`,
+  `pin_locked_until` to `wallet_profile`
 
-**Important**: PIN is for PAYMENT authorization only, not app access
+**Important**: PIN is for PAYMENT authorization only, not app access.
+The backend's `User.transactionPinHash` intentionally stays `null` -
+a PIN hash never syncs to the server. Honest limitations are documented
+in `docs/OFFLINE_FIRST.md` section 6.
 
 ### 🔄 Phase 5: Cryptographic Security
 **Goal**: Prevent transaction tampering
