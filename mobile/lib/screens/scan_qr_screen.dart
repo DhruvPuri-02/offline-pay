@@ -1,11 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'dart:convert';
-import '../providers/wallet_provider.dart';
-import '../models/qr_payload.dart';
-import '../models/transaction.dart';
-import '../utils/id_generator.dart';
 
+import '../models/qr_message.dart';
+import '../models/qr_payload.dart';
+import '../providers/wallet_provider.dart';
+import '../utils/payment_exception.dart';
+import '../widgets/qr_scanner_view.dart';
+import 'show_transaction_qr_screen.dart';
+
+/// Payer side of the receiver-initiated flow (spec section 6):
+///
+///   Bob opens Receive -> shows PAYMENT_REQUEST QR (has the amount in it)
+///   Alice opens Scan  -> reads it -> confirms -> transaction is created
+///                        locally as PENDING_SYNC -> receipt QR appears
+///   Bob scans the receipt to book it on his device.
+///
+/// Every step above happens with no internet connection.
 class ScanQRScreen extends StatefulWidget {
   const ScanQRScreen({super.key});
 
@@ -14,196 +24,191 @@ class ScanQRScreen extends StatefulWidget {
 }
 
 class _ScanQRScreenState extends State<ScanQRScreen> {
-  final _qrCodeController = TextEditingController();
-  bool _isProcessing = false;
-  QRPayload? _scannedPayload;
+  QRPayload? _request;
+  bool _submitting = false;
 
-  @override
-  void dispose() {
-    _qrCodeController.dispose();
-    super.dispose();
-  }
-
-  void _simulateScan() {
-    // For Phase 2 demo - simulate scanning by pasting QR JSON
-    if (_qrCodeController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please paste QR code JSON')),
-      );
-      return;
-    }
+  void _onScanned(String raw) {
+    if (_submitting) return;
 
     try {
-      final Map<String, dynamic> qrData = jsonDecode(_qrCodeController.text);
-      final qrPayload = QRPayload.fromJson(qrData);
-
-      if (qrPayload.isExpired) {
-        _showError('QR code has expired');
-        return;
+      final message = QrMessage.decode(raw);
+      switch (message) {
+        case PaymentRequestMessage(:final payload):
+          if (payload.isExpired) {
+            _showError('This payment request has expired. Ask for a new QR.');
+            return;
+          }
+          setState(() => _request = payload);
+        case TransactionReceiptMessage():
+          _showError(
+            'That is a payment receipt, not a payment request. '
+            'Receipts are scanned in Receive → Scan incoming payment.',
+          );
       }
-
-      setState(() {
-        _scannedPayload = qrPayload;
-      });
-    } catch (e) {
-      _showError('Invalid QR code format');
+    } on FormatException catch (e) {
+      _showError(e.message);
     }
   }
 
   void _showError(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), backgroundColor: Colors.red),
     );
   }
 
-  void _confirmPayment() async {
-    if (_scannedPayload == null) return;
+  Future<void> _confirmPayment() async {
+    final request = _request;
+    if (request == null || _submitting) return;
 
     final wallet = context.read<WalletProvider>();
-    if (wallet.currentUser == null) return;
-
-    if (_scannedPayload!.receiverId == wallet.currentUser!.userId) {
-      _showError('Cannot pay yourself');
-      return;
-    }
-
-    if (wallet.balance < _scannedPayload!.amount) {
-      _showError('Insufficient balance');
-      return;
-    }
-
-    setState(() {
-      _isProcessing = true;
-    });
+    setState(() => _submitting = true);
 
     try {
-      final transaction = Transaction(
-        transactionId: IdGenerator.generateTransactionId(),
-        senderId: wallet.currentUser!.userId,
-        receiverId: _scannedPayload!.receiverId,
-        senderWalletId: wallet.currentUser!.walletId,
-        receiverWalletId: _scannedPayload!.receiverWalletId,
-        amount: _scannedPayload!.amount,
-        type: TransactionType.offlinePayment,
-        status: TransactionStatus.confirmed,
-        description: _scannedPayload!.description,
-        nonce: _scannedPayload!.nonce,
-        timestamp: DateTime.now(),
+      // Phase 4: the transaction PIN prompt goes HERE, before creation.
+      //
+      // Note the nonce: it comes from Bob's request QR, so paying the same
+      // request twice produces the same nonce - and the backend's unique
+      // index rejects the second one at sync time.
+      final tx = await wallet.createOfflinePayment(
+        receiverId: request.receiverId,
+        receiverWalletId: request.receiverWalletId,
+        amount: request.amount,
+        description: request.description,
+        nonce: request.nonce,
       );
 
-      wallet.updateBalance(wallet.balance - _scannedPayload!.amount);
-      wallet.addTransaction(transaction);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Payment of ₹${_scannedPayload!.amount} successful!'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        Navigator.pop(context);
-      }
-    } catch (e) {
-      _showError('Payment failed: $e');
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => ShowTransactionQRScreen(transaction: tx)),
+      );
+    } on PaymentException catch (e) {
+      _showError(e.reason);
     } finally {
-      setState(() {
-        _isProcessing = false;
-      });
+      if (mounted) setState(() => _submitting = false);
     }
   }
 
-  void _cancelPayment() {
-    setState(() {
-      _scannedPayload = null;
-      _qrCodeController.clear();
-    });
+  void _reset() {
+    setState(() => _request = null);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Scan QR Code')),
-      body: _scannedPayload == null
-          ? _buildScanScreen()
-          : _buildConfirmationScreen(),
+      appBar: AppBar(title: const Text('Scan Payment QR')),
+      body: _request == null
+          ? Padding(
+              padding: const EdgeInsets.all(16),
+              child: QrScannerView(onValueScanned: _onScanned),
+            )
+          : _buildConfirmation(context),
     );
   }
 
-  Widget _buildScanScreen() {
-    return Padding(
+  Widget _buildConfirmation(BuildContext context) {
+    final request = _request!;
+    final wallet = context.watch<WalletProvider>();
+    final after = wallet.availableBalance - request.amount;
+    final willFail = request.amount > wallet.availableBalance;
+
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         children: [
-          const Text('Phase 2 Demo: Paste QR JSON below'),
           const SizedBox(height: 16),
-          TextField(
-            controller: _qrCodeController,
-            maxLines: 8,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              hintText: 'Paste QR JSON here',
+          const Icon(Icons.qr_code_2, size: 72),
+          const SizedBox(height: 16),
+          Text('Confirm Payment',
+              style: Theme.of(context).textTheme.headlineSmall),
+          const SizedBox(height: 24),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  _row('Pay to', request.receiverName),
+                  const Divider(),
+                  _row('Wallet', request.receiverWalletId),
+                  const Divider(),
+                  _row('Amount', '₹${request.amount.toStringAsFixed(2)}'),
+                  const Divider(),
+                  _row('Description', request.description),
+                  const Divider(),
+                  _row('Your available', '₹${wallet.availableBalance.toStringAsFixed(2)}'),
+                  const Divider(),
+                  _row(
+                    'After payment',
+                    '₹${after < 0 ? 0 : after.toStringAsFixed(2)}',
+                    warn: willFail,
+                  ),
+                ],
+              ),
             ),
           ),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: _simulateScan,
-            child: const Text('Simulate Scan'),
+          if (willFail) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.red),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.error_outline, color: Colors.red, size: 20),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Insufficient available offline balance. This payment will be rejected.',
+                      style: TextStyle(color: Colors.red, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 24),
+          FilledButton(
+            onPressed: _submitting ? null : _confirmPayment,
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.all(16),
+            ),
+            child: _submitting
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Confirm Payment'),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton(
+            onPressed: _submitting ? null : _reset,
+            child: const Text('Cancel'),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildConfirmationScreen() {
-    return Consumer<WalletProvider>(
-      builder: (context, wallet, child) {
-        return SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            children: [
-              const SizedBox(height: 24),
-              const Icon(Icons.qr_code_2, size: 80),
-              const SizedBox(height: 24),
-              Text('Confirm Payment', style: Theme.of(context).textTheme.headlineSmall),
-              const SizedBox(height: 32),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    children: [
-                      _buildInfoRow('Pay to', _scannedPayload!.receiverName),
-                      const Divider(),
-                      _buildInfoRow('Amount', '₹${_scannedPayload!.amount}'),
-                      const Divider(),
-                      _buildInfoRow('Description', _scannedPayload!.description),
-                      const Divider(),
-                      _buildInfoRow('Your Balance', '₹${wallet.balance}'),
-                      const Divider(),
-                      _buildInfoRow('Balance After', '₹${wallet.balance - _scannedPayload!.amount}'),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: _isProcessing ? null : _confirmPayment,
-                child: _isProcessing ? const CircularProgressIndicator() : const Text('Confirm Payment'),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton(onPressed: _cancelPayment, child: const Text('Cancel')),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildInfoRow(String label, String value) {
+  Widget _row(String label, String value, {bool warn = false}) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         Text(label, style: const TextStyle(color: Colors.grey)),
-        Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+        Flexible(
+          child: Text(
+            value,
+            textAlign: TextAlign.end,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: warn ? Colors.red : null,
+            ),
+          ),
+        ),
       ],
     );
   }

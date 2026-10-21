@@ -4,6 +4,13 @@ import '../models/user.dart';
 import '../models/transaction.dart';
 import '../models/qr_payload.dart';
 
+/// REST client for the backend.
+///
+/// IMPORTANT (Phase 3): nothing in the offline payment flow calls this.
+/// Opening the wallet, paying and receiving all go through
+/// `LocalDatabase` only - that is what makes the app work in airplane
+/// mode. This class becomes active again in Phase 6 (synchronization),
+/// when pending transactions are uploaded and reconciled.
 class ApiService {
   // Change this to your computer's IP address when testing on physical device
   static const String baseUrl = 'http://localhost:5000/api';

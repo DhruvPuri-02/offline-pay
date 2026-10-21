@@ -131,7 +131,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                         borderRadius: BorderRadius.circular(16),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
+                            color: Colors.black.withValues(alpha: 0.1),
                             blurRadius: 10,
                             spreadRadius: 2,
                           ),
@@ -173,17 +173,30 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
               ),
             ],
             const SizedBox(height: 24),
+            // Other side of the handshake: the receiver may also need to
+            // book a payment someone else created (scan their receipt QR).
+            OutlinedButton.icon(
+              onPressed: () {
+                Navigator.pushNamed(context, '/record-payment');
+              },
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Text('I received a payment - scan receipt'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.all(16),
+              ),
+            ),
+            const SizedBox(height: 16),
             // Info card
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.blue.withOpacity(0.1),
+                color: Colors.blue.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: Colors.blue),
               ),
               child: Row(
                 children: [
-                  Icon(Icons.info_outline, color: Colors.blue),
+                  const Icon(Icons.info_outline, color: Colors.blue),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(

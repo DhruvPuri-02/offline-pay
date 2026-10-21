@@ -1,25 +1,47 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+import 'providers/wallet_provider.dart';
 import 'screens/home_screen.dart';
 import 'screens/pay_screen.dart';
 import 'screens/receive_screen.dart';
+import 'screens/record_payment_screen.dart';
 import 'screens/scan_qr_screen.dart';
 import 'screens/transaction_history_screen.dart';
-import 'providers/wallet_provider.dart';
-import 'package:provider/provider.dart';
 
-void main() {
-  runApp(const OfflinePayApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Desktop support: sqflite's native implementation only exists on
+  // mobile/macOS, so Windows and Linux use the FFI (C library) backend
+  // instead. Same schema, same LocalDatabase code, runs on a laptop -
+  // handy when you want to demo without a phone. (Camera scanning is
+  // unavailable there; the paste-QR fallback covers it.)
+  if (Platform.isWindows || Platform.isLinux) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
+
+  // Boot from SQLite BEFORE the first frame. No network, no spinner wait:
+  // the wallet paints immediately, even in airplane mode.
+  final walletProvider = WalletProvider();
+  await walletProvider.initialize();
+
+  runApp(OfflinePayApp(walletProvider: walletProvider));
 }
 
 class OfflinePayApp extends StatelessWidget {
-  const OfflinePayApp({super.key});
+  const OfflinePayApp({super.key, required this.walletProvider});
+
+  final WalletProvider walletProvider;
 
   @override
   Widget build(BuildContext context) {
-    return MultiProvider(
-      providers: [
-        ChangeNotifierProvider(create: (_) => WalletProvider()),
-      ],
+    return ChangeNotifierProvider.value(
+      value: walletProvider,
       child: MaterialApp(
         title: 'OfflinePay',
         debugShowCheckedModeBanner: false,
@@ -52,6 +74,7 @@ class OfflinePayApp extends StatelessWidget {
           '/pay': (context) => const PayScreen(),
           '/receive': (context) => const ReceiveScreen(),
           '/scan': (context) => const ScanQRScreen(),
+          '/record-payment': (context) => const RecordPaymentScreen(),
           '/history': (context) => const TransactionHistoryScreen(),
         },
       ),

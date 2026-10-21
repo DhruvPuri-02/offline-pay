@@ -16,9 +16,13 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // Initialize with demo user for Phase 2 testing
+    // main() already boots the wallet from SQLite before the first frame;
+    // this is only a safety net so a cold widget tree still gets loaded.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<WalletProvider>().setDemoUser();
+      final wallet = context.read<WalletProvider>();
+      if (!wallet.isInitialized) {
+        wallet.initialize();
+      }
     });
   }
 
@@ -29,23 +33,33 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('OfflinePay'),
         actions: [
           IconButton(
+            tooltip: 'Reload local ledger',
             icon: const Icon(Icons.refresh),
             onPressed: () {
-              context.read<WalletProvider>().loadTransactions();
+              context.read<WalletProvider>().reload();
             },
           ),
         ],
       ),
       body: Consumer<WalletProvider>(
         builder: (context, wallet, child) {
-          if (wallet.currentUser == null) {
-            return const Center(
-              child: CircularProgressIndicator(),
+          if (!wallet.isInitialized || wallet.currentUser == null) {
+            return Center(
+              child: wallet.error != null
+                  ? Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        wallet.error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.red),
+                      ),
+                    )
+                  : const CircularProgressIndicator(),
             );
           }
 
           return RefreshIndicator(
-            onRefresh: () => wallet.loadTransactions(),
+            onRefresh: () => wallet.reload(),
             child: SingleChildScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(16),
@@ -59,8 +73,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 24),
 
-                  // Balance Card
-                  BalanceCard(balance: wallet.balance),
+                  // Balance Card (available / confirmed / pending)
+                  BalanceCard(summary: wallet.balanceSummary),
                   const SizedBox(height: 24),
 
                   // Quick Actions
@@ -68,9 +82,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
                       QuickActionButton(
-                        icon: Icons.qr_code_scanner,
+                        icon: Icons.payments,
                         label: 'Pay',
-                        onTap: () => Navigator.pushNamed(context, '/scan'),
+                        onTap: () => Navigator.pushNamed(context, '/pay'),
                       ),
                       QuickActionButton(
                         icon: Icons.qr_code,
@@ -102,13 +116,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Colors.orange.withOpacity(0.1),
+                      color: Colors.orange.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(color: Colors.orange),
                     ),
                     child: Row(
                       children: [
-                        Icon(Icons.warning_amber, color: Colors.orange),
+                        const Icon(Icons.warning_amber, color: Colors.orange),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
