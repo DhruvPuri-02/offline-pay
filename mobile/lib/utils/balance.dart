@@ -40,7 +40,11 @@ const List<TransactionStatus> _unsettledStatuses = [
   TransactionStatus.syncing,
 ];
 
-bool _isUnsettled(Transaction tx) => _unsettledStatuses.contains(tx.status);
+/// A transaction that has locally moved but is not settled with the
+/// backend yet - it reserves money (outgoing) or claims money (incoming)
+/// until the server's verdict arrives. Used by the balance maths AND by
+/// Phase 6 sync, which only applies server verdicts to unsettled rows.
+bool isUnsettled(TransactionStatus status) => _unsettledStatuses.contains(status);
 
 /// Compute all three balances from the confirmed balance + the local ledger.
 BalanceSummary computeBalance({
@@ -52,7 +56,7 @@ BalanceSummary computeBalance({
   double incoming = 0;
 
   for (final tx in transactions) {
-    if (!_isUnsettled(tx)) continue;
+    if (!isUnsettled(tx.status)) continue;
     if (tx.senderId == userId) {
       outgoing += tx.amount;
     } else if (tx.receiverId == userId) {

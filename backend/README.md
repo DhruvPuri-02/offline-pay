@@ -11,6 +11,10 @@ Backend server for OfflinePay - An offline-first digital payment prototype.
 - **Phase 5 (backend half)**: Ed25519 receipt verification
   (`src/utils/transactionSignature.js`) proven against the app with a
   shared signed interop vector (`npm run test:phase5`)
+- **Phase 6**: offline sync - `POST /api/sync/push` (batch upload with
+  per-transaction verdicts: signature + key binding + replay + idempotent
+  dedupe) and `POST /api/sync/pull`; real end-to-end test in
+  `npm run test:phase6`
 - **Replay protection**: duplicate-nonce uploads are rejected with
   `409 DUPLICATE_NONCE` (database-enforced, race-safe)
 - **Zero-install database**: runs against an in-memory MongoDB when no
@@ -189,9 +193,43 @@ Responses:
   race).
 - `400` insufficient balance / validation failure
 
-> This is the *immediate* path used by demo scripts and the future Phase 6
-> sync endpoint builds on the same checks. Offline payments in the app are
+> This is the *immediate* path used by demo scripts. The Phase 6 sync
+> endpoint below builds on the same checks; offline payments in the app are
 > NOT sent here in real time - they wait in the device's pending queue.
+
+### Offline Sync (Phase 6)
+
+**POST /api/sync/push** - batch upload of a device's PENDING_SYNC queue
+```
+body: { userId?, publicKey?, transactions: [ transaction, ... ] }
+200:  { data: { registration, results: [
+        { transactionId, outcome, serverStatus, reason }
+      ], serverTime } }
+```
+Per transaction, checked in order: shape -> signature (offline payments
+must be Ed25519-signed) -> registered-key binding (TOFU: first push
+binds `User.publicKey`; later mismatches refused) -> nonce replay ->
+transactionId idempotency. Outcomes:
+- `CONFIRMED` - stored, server balances of known users move
+- `DUPLICATE` - identical copy already stored (both devices push their
+  copy of a payment; ACKed, never double-credited)
+- `CONFLICT` - same transactionId, different content: first copy kept
+- `REJECTED` - with `reason` (tampered signature, unsigned, replay, ...)
+
+One bad transaction never hides the fate of the others in the batch.
+
+**POST /api/sync/pull** - everything stored about a user
+```
+body: { userId, since? }          // since = ISO timestamp (incremental)
+200:  { data: { transactions: [...], serverTime } }
+```
+Returns payments the OTHER device uploaded while this one was offline,
+plus statuses. Optional `since` for cheap incremental syncs.
+
+> Honest limits: no authentication (anyone can claim any userId - TOFU
+> binding only) and NO balance arbitration yet (a batch can push a sender
+> negative): both are Phase 7/production concerns, documented in
+> docs/OFFLINE_FIRST.md section 8. Transport is cleartext HTTP on the LAN.
 
 ## Data Models
 
@@ -284,8 +322,8 @@ node scripts/verify_receipt.js receipt.json   # paste a receipt from the app
 - [x] **Phase 2**: QR endpoints + replay protection (backend side)
 - [x] **Phase 3**: Offline-first mobile app (backend unchanged)
 - [x] **Phase 4**: Transaction PIN security (app-side only; PIN never syncs)
-- [x] **Phase 5**: Cryptographic signatures (verifier + interop vector; public-key registration arrives with Phase 6)
-- [ ] **Phase 6**: Backend synchronization (upload/verify/reconcile endpoint)
+- [x] **Phase 5**: Cryptographic signatures (verifier + interop vector)
+- [x] **Phase 6**: Backend synchronization (push/pull + TOFU key registration; balance arbitration is Phase 7)
 - [ ] **Phase 7**: Double-spending protection (server-side arbitration)
 - [ ] **Phase 8**: Advanced communication (Bluetooth/NFC)
 
@@ -303,20 +341,23 @@ backend/
 │   │   ├── userController.js
 │   │   ├── transactionController.js
 │   │   ├── qrController.js   # QR generate/verify/pay
-│   │   └── (utils live in src/utils)
+│   │   └── syncController.js # Phase 6: push verdicts + pull merge
 │   ├── utils/
 │   │   └── transactionSignature.js  # Phase 5: canonical payload + Ed25519 verify
 │   ├── routes/
 │   │   ├── userRoutes.js
 │   │   ├── transactionRoutes.js
-│   │   └── qrRoutes.js
-│   └── server.js             # Express app entry point
+│   │   ├── qrRoutes.js
+│   │   └── syncRoutes.js     # POST /api/sync/push, /pull
+│   ├── app.js                # Express app (importable by tests/scripts)
+│   └── server.js             # entry point: app + listen
 ├── scripts/
 │   ├── demo-simple.js        # Phase 1 demonstration
 │   ├── demo-phase1.js
 │   ├── demo-phase2.js        # QR flow demonstration
 │   ├── test-signature.js     # Phase 5: Dart<->Node interop vector
-│   └── verify_receipt.js     # Phase 5: verify a receipt JSON by hand
+│   ├── verify_receipt.js     # Phase 5: verify a receipt JSON by hand
+│   └── demo-phase6.js        # Phase 6: REAL sync endpoints over HTTP
 ├── .env.example
 ├── .env
 └── package.json
@@ -334,7 +375,13 @@ backend/
   (Node's built-in crypto) - the exact rules mirrored from the app's
   `SignatureService.canonicalPayload`, pinned by the shared interop
   vector in `scripts/test-signature.js`.
-- Double-spending protection via reconciliation (Phase 7)
+- Sync verifies everything it stores (Phase 6): shape, signature,
+  registered-key binding (TOFU: first push binds userId -> public key,
+  later mismatches refused), nonce replay, and transactionId idempotency.
+  What it deliberately does NOT do yet is check the sender's balance -
+  see the line below.
+- Double-spending protection via server-side balance arbitration
+  (Phase 7) - the last major piece still missing.
 
 ## License
 

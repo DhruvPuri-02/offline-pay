@@ -141,23 +141,38 @@ interop. Same requirements, better engineering - the underlying rule
 (use established libraries, never hand-roll crypto) is fully honored.
 
 **Important**: signatures prove "the holder of this key authorized these
-exact details". Binding keys to real identities (so a random keypair
-cannot impersonate a user) arrives with Phase 6 public-key registration -
-documented honestly in `docs/OFFLINE_FIRST.md` section 7.
-- Prevent amount modification
+exact details". Binding keys to identities happens in Phase 6: the first
+sync registers the device's public key server-side (trust-on-first-use),
+after which receipts signed by any OTHER key are refused for that sender -
+documented honestly in `docs/OFFLINE_FIRST.md` sections 7 and 8.
 
-**Why**: Ensures transaction integrity and prevents forgery
-
-### 🔄 Phase 6: Synchronization
+### ✅ Phase 6: Synchronization
 **Goal**: Reconcile offline transactions with backend
 
-**Features**:
-- Upload pending transactions
-- Verify signatures
-- Check for duplicates/replays
-- Validate balances
-- Update transaction status
-- Idempotent processing
+**What was built**:
+- `POST /api/sync/push`: batch upload of the `PENDING_SYNC` queue. The
+  server checks shape -> signature (Phase 5) -> registered-key binding
+  -> nonce replay -> transactionId idempotency, and answers each
+  transaction individually: CONFIRMED / DUPLICATE / CONFLICT / REJECTED
+- `POST /api/sync/pull`: everything the server knows about this user -
+  payments the OTHER device uploaded while we were offline, plus statuses
+- **Idempotent by design**: identical re-pushes are ACKed (never
+  double-credited); identical content under the same id = DUPLICATE,
+  different content = CONFLICT (first copy wins); same nonce under a new
+  id = replay rejection
+- **Local application**: confirmed rows move the confirmed balance exactly
+  once (outgoing debits, incoming credits); rejected/conflicted rows
+  RELEASE their reservation; pull inserts confirmed incoming payments so
+  money received offline becomes spendable
+- **Trust-on-first-use key registration** completes Phase 5: first push
+  binds userId -> public key, later mismatches are refused for that sender
+- Manual **Sync** button on Home with queue count + last sync verdict;
+  failures leave the queue untouched (offline-first contract)
+
+**Honest scope**: balance arbitration is NOT here yet - a device can push
+itself negative; server-side double-spend arbitration is Phase 7. There is
+also no authentication (TOFU first-claim-wins) and the transport is
+cleartext HTTP. See `docs/OFFLINE_FIRST.md` section 8.
 
 **Transaction Status Flow**:
 ```
@@ -288,9 +303,10 @@ Signature → Verify with Public Key → Valid/Invalid
 
 ### 4. Synchronization Flow
 
-> Implemented so far: the local pending queue and status storage
+> Implemented (Phase 6): `SyncService` + `POST /api/sync/push|pull`,
+> including per-transaction verdicts, idempotent duplicates, conflict
+> detection, TOFU key registration, and local status/balance application
 > (`LocalDatabase.getPendingSyncTransactions`, `updateTransactionStatus`).
-> The upload endpoint below is Phase 6.
 
 ```
 Device                              Backend

@@ -306,6 +306,19 @@ class LocalDatabase {
     return rows.map(_fromRow).toList();
   }
 
+  /// Single transaction by id, or null (Phase 6 sync looks up both the
+  /// push queue and pulled transactions this way).
+  Future<Transaction?> getTransactionById(String transactionId) async {
+    final db = await database;
+    final rows = await db.query(
+      'transactions',
+      where: 'transaction_id = ?',
+      whereArgs: [transactionId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : _fromRow(rows.first);
+  }
+
   /// Update a transaction's status after the backend has responded
   /// (Phase 6). Stores the rejection reason so the UI can explain WHY
   /// a payment failed.

@@ -1,4 +1,4 @@
-# OfflinePay - Offline-First Design (Implemented, Phases 2-5)
+# OfflinePay - Offline-First Design (Implemented, Phases 2-6)
 
 This document describes **what the code actually does today**, not what is
 planned. Planned work is marked clearly as such.
@@ -155,14 +155,16 @@ Implemented in `mobile/lib/utils/balance.dart` (`validateOfflinePayment`):
 | Payer claims "I never paid" after handing over a receipt | 🟡 mitigated (Phase 5) | The receipt is signed; the payer's key cannot deny *these details*. Binding keys to people = Phase 6 public-key registration |
 | Receipt amount tampered between devices | ✅ yes (Phase 5) | Signatures cover amount/receiver/nonce/description/timestamp; receiver + backend both refuse tampered receipts |
 | Device reset / app reinstall resets local ledger | ❌ no | Phase 6 server is the authority after sync |
-| Two devices with cloned wallets spend the same balance | ❌ no | Server-side reconciliation (Phase 6/7) |
+| Two devices with cloned wallets spend the same balance | ❌ no | Server-side arbitration over the Phase 6 sync channel (Phase 7) |
 | Backend down during sync | N/A | Requeue: transactions stay `PENDING_SYNC` |
 
 **Honest summary:** the local rules stop the *accidental and casual* case
 (the user spending the same offline balance twice on one device). Real
 double-spend guarantees require the authoritative server to arbitrate at
-sync time - which is Phase 6/7. This prototype does not have the same
-guarantees as a banking system and must not be described as if it did.
+sync time - Phase 6 now provides the sync channel and verification, but
+the balance arbitration itself is Phase 7. This prototype does not have
+the same guarantees as a banking system and must not be described as if
+it did.
 
 ---
 
@@ -247,40 +249,65 @@ established library, never hand-roll crypto - is fully honored.
 | Claim | Reality |
 |---|---|
 | "A receipt cannot be forged" | ❌ Anyone can generate a keypair and sign a *fake* receipt naming themselves as payer. What you DO get: the payer's own device cannot quietly alter or later deny the details it signed. |
-| "We know WHO signed" | 🟡 Not yet. A signature binds details to a KEY, not to a person. Phase 6 registers public keys server-side, tying keys to registered wallets. |
+| "We know WHO signed" | 🟡 TOFU only (Phase 6): the first sync binds userId -> key, later mismatches are refused. Without authentication the first claim on an identity stays unverified - see section 8. |
 | "Tampering goes undetected" | ✅ prevented today: amount/receiver/nonce/description/timestamp edits all break the signature; the receiving app and the backend both refuse the receipt. |
 | "The private key is unextractable" | ❌ The seed is encrypted at rest in the platform keystore - this defeats casual file reads and backups, NOT root/malware reading a running process. No prototype on a general-purpose OS can claim more. |
 | "Unsigned receipts are rejected" | 🟡 ACCEPTED by design (pre-Phase-5 compatibility) but flagged as unverifiable in the UI. Only *invalid* signatures are hard-refused. |
 
 ---
 
-## 8. Synchronization flow (partially implemented)
+## 8. Synchronization flow (Phase 6, implemented)
 
-**Implemented today (Phase 3):**
-- Transactions are created as `PENDING_SYNC` and persisted.
-- `WalletProvider.pendingSyncTransactions` + `LocalDatabase.getPendingSyncTransactions()`
-  expose the upload queue (ordered oldest-first, `SYNCING` included).
-- `LocalDatabase.updateTransactionStatus(id, status, rejectionReason:)`
-  is ready to persist the server's verdict.
+Implemented in `mobile/lib/services/sync_service.dart` (device) and
+`backend/src/controllers/syncController.js` (server), with a real
+end-to-end test over live HTTP in `backend/scripts/demo-phase6.js`
+(`npm run test:phase6`).
 
-**Planned (Phase 6):**
+**PUSH** (`POST /api/sync/push`): the device uploads its whole
+`PENDING_SYNC` queue as one batch, declaring its userId + Ed25519 public
+key. Per transaction the server checks, in order:
 
-```
-pendingSyncTransactions
-      |  POST /api/sync/transactions      (endpoint to be built)
-      v
-backend verifies: signature (P5) -> nonce replay -> transactionId
-      -> balance/conflict check
-      |
-      v  per transaction: CONFIRMED | REJECTED(reason) | CONFLICT
-      |
-device updates local rows and reconciles confirmed_balance
-```
+1. **shape** - required fields present, positive amount
+2. **signature** - offline payments MUST be signed and verify (Phase 5)
+3. **key binding** - if the sender's key is registered, this must be it
+   (a self-consistent signature from an unregistered key is refused)
+4. **nonce replay** - same nonce under a different id = REJECTED
+5. **transactionId idempotency** - identical content = DUPLICATE (both
+   devices push their copy of a payment; the second copy is ACKed, never
+   double-credited); different content = CONFLICT (first copy kept)
+6. **accept** - stored as CONFIRMED; server balances of known users move
 
-The backend already guarantees the pieces the sync endpoint will need:
-unique `transactionId`, unique partial index on `nonce` (duplicate uploads
-of the same payment return `409 DUPLICATE_NONCE` instead of double-crediting),
-and balance checks on every credit/debit.
+Each verdict is applied locally: CONFIRMED/DUPLICATE -> the row becomes
+CONFIRMED and the confirmed balance moves exactly ONCE (outgoing
+debits, incoming credits - a `DUPLICATE` is how a push whose response
+was lost gets booked on retry). REJECTED/CONFLICT -> status + reason
+are stored and the local reservation is RELEASED: the server refused to
+spend the money, so it is spendable again.
+
+**PULL** (`POST /api/sync/pull`): returns every stored transaction
+involving the user. The device merges each one: unknown ids are
+inserted with the SERVER's status - this is how a payment received
+while the phone was offline finally appears and becomes spendable -
+while known unsettled ids are advanced to the server's status. Every
+pulled transaction is re-verified locally (signature self-consistency)
+before it may enter the ledger.
+
+**Trust-on-first-use key registration**: the first push declaring a
+public key for a user BINDS it (`User.publicKey`); later pushes signed
+by a different key are refused for that sender. This completes Phase
+5's trust story - but it is TOFU: there is no login, so the FIRST
+claim on a userId wins.
+
+### Honest limitations of sync
+
+| Claim | Reality |
+|---|---|
+| "Only the real user can sync as that user" | ❌ There is NO authentication in this prototype. Anyone who can reach the server may push/pull as any userId. TOFU key binding helps after the first honest registration, but the first claim on an identity is unverified. Production needs authenticated channels (tokens/login) + PKI-bound keys. |
+| "Double-spends are impossible now" | ❌ Phase 6 stores what passes signature/shape/replay checks WITHOUT checking the sender's balance - a device can push itself negative. Server-side balance arbitration is Phase 7. |
+| "Sync is automatic" | 🟡 Manual: the Home screen's Sync button. A production app would hook connectivity events and app resume; the service itself is trigger-agnostic. |
+| "The transport is secure" | ❌ Cleartext HTTP on the LAN. Signatures make TAMPERING detectable (push is verified server-side, pull re-verified device-side), but metadata, privacy and server identity are unprotected. Real deployments need TLS. |
+| "Sync creates the server-side user" | 🟡 No. Sync records transactions and binds keys opportunistically; onboarding users with authoritative starting balances is Phase 7's job. |
+| "A failed sync loses data" | ✅ No: push/pull failures leave the queue and balances untouched, and every step is idempotent - retrying is always safe. |
 
 ---
 
@@ -298,11 +325,14 @@ and balance checks on every credit/debit.
 | `test/wallet_provider_signature_test.dart` | Signing inside payments; key lazily generated, survives restart; two-device flow with real payer/receiver wallets; tampered receipts refused, unsigned accepted |
 | `test/pin_authorization_screen_test.dart` | Setup vs verify modes, mismatch handling, locked-state UI (fake wallet, no SQLite in FakeAsync) |
 | `test/show_transaction_qr_screen_test.dart` | Receipt shows the signing key fingerprint / admits "not signed" |
+| `test/sync_service_test.dart` | Push verdicts applied once (confirm/duplicate/reject/conflict), reservation release on rejection, pull merge (insert confirmed incoming, skip tampered, accept unsigned legacy, ignore foreign), failure leaves queue intact, full cycle balances |
 | `test/widget_test.dart` | Home screen boots from SQLite alone and renders the balances |
 
-Run: `cd mobile && flutter test` (79 tests, a few seconds).
+Run: `cd mobile && flutter test` (92 tests, a few seconds).
 
 Backend: `cd backend && npm test` (Phase 1 demo, runs without MongoDB),
-`npm run test:phase2` (QR replay protection), or `npm run test:phase5`
-(Node verifying the Dart-signed interop vector - the Phase 6 building
-block).
+`npm run test:phase2` (QR replay protection), `npm run test:phase5`
+(Node verifying the Dart-signed interop vector), or `npm run test:phase6`
+(the REAL sync endpoints over HTTP with real signatures - confirm,
+idempotent duplicate, tampered/key-mismatch/replay rejection, conflict,
+pull).

@@ -18,7 +18,7 @@ and double-spend controls.
 - ✅ Phase 3: Offline-first architecture (SQLite ledger, pending-sync queue)
 - ✅ Phase 4: Transaction PIN security (bcrypt hashing, 5-attempt lockout)
 - ✅ Phase 5: Cryptographic signatures (Ed25519 receipts, verified on scan + by Node)
-- 🔄 Phase 6: Backend synchronization
+- ✅ Phase 6: Backend synchronization (push verdicts, pull merge, TOFU key binding)
 - 🔄 Phase 7: Double-spending protection (local half done: reservation + offline cap)
 - 🔄 Phase 8: Advanced communication (Bluetooth/NFC)
 
@@ -39,6 +39,9 @@ and double-spend controls.
 - Transaction PIN: salted bcrypt hash + temporary lockout (device-local, Phase 4)
 - Ed25519 transaction signatures: tamper-evident receipts, verified on
   scan and cross-checked by the backend via a shared interop vector (Phase 5)
+- Server-side sync verification: signature + registered-key binding +
+  nonce replay + idempotent dedupe on every upload; pull re-verified on
+  the device (Phase 6)
 
 ## What Works Right Now
 
@@ -54,6 +57,11 @@ and double-spend controls.
 5. **Backend** - user/wallet/transfer/history/QR APIs with duplicate-nonce
    replay rejection (`409 DUPLICATE_NONCE`), runnable with or without
    MongoDB installed.
+6. **Synchronization** - the Home screen's Sync button uploads the
+   `PENDING_SYNC` queue (each transaction gets a verdict), pulls
+   payments other devices uploaded while this one was offline, and
+   applies them to balances. Offline, it fails without losing anything
+   and the queue just waits.
 
 ## Quick Start
 
@@ -68,7 +76,7 @@ npm test           # Phase 1 demo script, runs anywhere
 cd mobile
 flutter pub get
 flutter analyze
-flutter test       # 31 tests
+flutter test       # 92 tests
 flutter run        # device/emulator
 ```
 
@@ -97,11 +105,12 @@ offline-pay/
 
 ## Honest Limitations
 
-- Local rules stop double-spending **on one device**; authoritative
-  arbitration happens only when Phase 6 sync runs against the server.
-- Transactions are not yet signed (Phase 5), so a receipt could in
-  principle be altered between devices - the prototype does not defend
-  against that yet and does not claim to.
+- Local rules stop double-spending **on one device**; server-side
+  balance arbitration (the authoritative half) is Phase 7 - Phase 6 sync
+  currently accepts what passes signature/shape/replay checks.
+- Sync has no authentication (trust-on-first-use key binding, anyone can
+  claim any userId) and runs over cleartext HTTP - fine for a LAN demo,
+  not for production.
 - Amounts use `double`; real financial systems use integer minor units.
 
 ---

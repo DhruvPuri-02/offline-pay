@@ -92,6 +92,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
                   // Balance Card (available / confirmed / pending)
                   BalanceCard(summary: wallet.balanceSummary),
+                  const SizedBox(height: 16),
+
+                  // Sync status (Phase 6): how many transactions are
+                  // waiting, and what the last sync achieved. Tapping
+                  // Sync works online AND offline - offline it just
+                  // reports the failure and the queue survives.
+                  _SyncStatusCard(wallet: wallet),
                   const SizedBox(height: 24),
 
                   // Quick Actions
@@ -158,6 +165,75 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+/// Phase 6: queue size + last sync verdict + the Sync button.
+class _SyncStatusCard extends StatelessWidget {
+  const _SyncStatusCard({required this.wallet});
+
+  final WalletProvider wallet;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final pending = wallet.pendingSyncCount;
+    final report = wallet.lastSyncReport;
+
+    final String statusText;
+    if (pending > 0) {
+      statusText = '$pending transaction${pending == 1 ? '' : 's'} waiting to sync.';
+    } else if (report != null) {
+      statusText = 'All synced. ${report.summary}';
+    } else {
+      statusText = 'Everything is synced with the server.';
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            pending > 0 ? Icons.cloud_off : Icons.cloud_done,
+            color: pending > 0 ? Colors.orange : Colors.green,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(statusText, style: theme.textTheme.bodyMedium),
+                if (report != null)
+                  Text(
+                    report.summary,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: report.ok ? Colors.green.shade800 : Colors.red,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.tonalIcon(
+            // A sync while one is running would double-fire; the
+            // provider also guards, but the UI reflects it too.
+            onPressed: wallet.isLoading ? null : () => wallet.syncNow(),
+            icon: wallet.isLoading
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.sync),
+            label: const Text('Sync'),
+          ),
+        ],
       ),
     );
   }

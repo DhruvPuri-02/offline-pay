@@ -6,6 +6,7 @@ import '../services/local_database.dart';
 import '../services/pin_service.dart';
 import '../services/secure_key_store.dart';
 import '../services/signature_service.dart';
+import '../services/sync_service.dart';
 import '../utils/balance.dart';
 import '../utils/id_generator.dart';
 import '../utils/payment_exception.dart';
@@ -26,9 +27,14 @@ class WalletProvider with ChangeNotifier {
     LocalDatabase? database,
     DateTime Function()? clock,
     SecureKeyStore? keyStore,
+    SyncTransport? syncTransport,
   })  : _db = database ?? LocalDatabase.instance,
         _clock = clock ?? DateTime.now,
-        _keyStore = keyStore ?? const PlatformKeyStore();
+        _keyStore = keyStore ?? const PlatformKeyStore(),
+        _syncService = SyncService(
+          db: database ?? LocalDatabase.instance,
+          transport: syncTransport ?? const HttpSyncTransport(),
+        );
 
   /// Hard cap on a single offline payment (spec section 11, offline limit).
   /// Deliberately small: a lost/stolen device can only inject so much
@@ -49,10 +55,15 @@ class WalletProvider with ChangeNotifier {
   /// Encrypted storage for the Ed25519 private key (platform keystore).
   final SecureKeyStore _keyStore;
 
+  /// Push/pull against the backend (Phase 6). Injected so tests can run
+  /// the whole sync flow without a network.
+  final SyncService _syncService;
+
   User? _profile;
   List<Transaction> _transactions = [];
   PinRecord _pinRecord = const PinRecord();
   String? _publicKeyBase64; // lazily loaded (Phase 5)
+  SyncReport? _lastSyncReport; // Phase 6
   bool _initialized = false;
   bool _busy = false;
   String? _error;
@@ -125,6 +136,15 @@ class WalletProvider with ChangeNotifier {
   /// Whether a signing key exists on this device yet.
   bool get hasSigningKey => _publicKeyBase64 != null;
 
+  /// Transactions still waiting to be uploaded (the Phase 6 queue size
+  /// shown on the Home sync card).
+  int get pendingSyncCount => _transactions
+      .where((t) => isUnsettled(t.status))
+      .length;
+
+  /// What the most recent [syncNow] achieved, for the UI.
+  SyncReport? get lastSyncReport => _lastSyncReport;
+
   List<Transaction> get sentTransactions => _transactions
       .where((tx) => tx.senderId == _profile?.userId)
       .toList();
@@ -167,8 +187,8 @@ class WalletProvider with ChangeNotifier {
     }
   }
 
-  /// Re-read everything from SQLite (used by pull-to-refresh).
-  /// Local-only by design - syncing with the backend is Phase 6.
+  /// Re-read everything from SQLite (used by pull-to-refresh and after a
+  /// Phase 6 sync). Local-only by design.
   Future<void> reload() async {
     final profile = await _db.getWalletProfile();
     if (profile == null) return;
@@ -354,6 +374,53 @@ class WalletProvider with ChangeNotifier {
       signature: signature,
       senderPublicKey: _publicKeyBase64!,
     );
+  }
+
+  // ------------------------------------------------------------------
+  // Synchronization (Phase 6)
+  // ------------------------------------------------------------------
+
+  /// Reconcile the local ledger with the backend: upload the
+  /// PENDING_SYNC queue (the server verifies signatures and returns
+  /// verdicts), then pull everything the server knows about this user.
+  ///
+  /// Nothing here can lose money: if the network is down the queue is
+  /// untouched, and a re-run is idempotent (the server dedupes by
+  /// transaction id, the client only books balance moves on
+  /// unsettled->confirmed transitions).
+  ///
+  /// Returns the report (also kept in [lastSyncReport]); `null` only if
+  /// a sync is already running.
+  Future<SyncReport?> syncNow() async {
+    _requireInitialized();
+    if (_busy) return null;
+    _busy = true;
+    notifyListeners();
+
+    try {
+      // Declare this device's signing key if it exists (server binds it
+      // to the user trust-on-first-use) - but never force key creation:
+      // a wallet that has never paid has nothing to declare.
+      final publicKey = _publicKeyBase64 ??
+          await _keyStore.read(SignatureService.publicKeyKey);
+
+      final report = await _syncService.syncNow(
+        userId: _profile!.userId,
+        publicKey: publicKey,
+      );
+
+      await reload(); // pick up statuses + balance moves from SQLite
+      _lastSyncReport = report;
+      return report;
+    } catch (e) {
+      // SyncService already swallows transport errors into the report;
+      // this is the belt-and-braces path for local database failures.
+      _lastSyncReport = SyncReport()..errorMessage = 'Sync failed: $e';
+      return _lastSyncReport;
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
   }
 
   // ------------------------------------------------------------------

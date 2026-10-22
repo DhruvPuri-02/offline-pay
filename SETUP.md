@@ -119,6 +119,21 @@ installed. **Turn Wi-Fi and mobile data OFF on both devices first.**
 Pay-a-friend variant (payer initiates): **Pay** → recipient ID + amount →
 Continue → Alice shows a receipt QR → Bob records it in step 4 above.
 
+**Step 7 - back online (Phase 6 sync):**
+
+```
+7a. Start the backend (cd backend && npm.cmd start) and turn Wi-Fi back ON
+7b. Both devices: tap [Sync] on Home
+    → Alice: her outgoing payment gets a verdict (CONFIRMED) - the
+      reserved amount becomes a real debit, no balance jump
+    → Bob:   pulls the payment Alice uploaded (even if Bob never synced
+      his copy first) - it lands as CONFIRMED and becomes spendable
+    → History shows the settled statuses; the queue count drops to 0
+    → Repeat taps are safe: sync is idempotent (never double-credits)
+With the backend STOPPED, tapping [Sync] shows "Push failed" and loses
+nothing - the queue waits exactly as before.
+```
+
 ---
 
 ## 4. Project Status
@@ -154,10 +169,21 @@ the first payment. The backend verifies the same bytes:
 `cd backend && npm run test:phase5`, or copy a receipt JSON and run
 `node scripts/verify_receipt.js receipt.json`.
 
-### 🔄 Next: Phase 6 - Backend synchronization
-Upload `PENDING_SYNC` transactions, reconcile against the server,
-arbitrate double-spends authoritatively (see `docs/OFFLINE_FIRST.md`
-section 8).
+### ✅ Phase 6 - Backend synchronization
+The Home screen's **Sync** button uploads every `PENDING_SYNC` transaction
+in one batch; the server verifies signatures, refuses replays, dedupes by
+transaction id (both devices may push the same payment) and returns a
+per-transaction verdict that the app applies locally - confirmed money
+moves the balance exactly once, rejections release the reservation. A
+pull then imports payments other devices uploaded while this one was
+offline. First push binds the device's public key to its user
+(trust-on-first-use). Self-check: `cd backend && npm run test:phase6`.
+Honest limits (no auth, no balance arbitration yet, cleartext HTTP):
+`docs/OFFLINE_FIRST.md` section 8.
+
+### 🔄 Next: Phase 7 - Double-spending protection
+Server-side balance arbitration: the server rejects spends beyond the
+sender's authoritative balance (statuses CONFLICT/REJECTED with reasons).
 
 ---
 
@@ -172,6 +198,7 @@ section 8).
 | Camera does not open | Grant permission, or use the paste-JSON field (works everywhere) |
 | Windows build: "requires symlink support" | Enable Windows Developer Mode |
 | App cannot reach backend on a phone | Use your PC's LAN IP in `mobile/lib/services/api_service.dart` (`baseUrl`); the offline flow does not need this |
+| Sync says "Push failed" | Backend not running (or wrong `baseUrl`) - start it with `npm.cmd start`; the queue keeps everything meanwhile |
 
 ---
 
@@ -185,7 +212,7 @@ section 8).
 ---
 
 **Project**: OfflinePay
-**Status**: Phases 1-5 complete
+**Status**: Phases 1-6 complete
 **Date**: October 2026
 
 **⚠️ SIMULATED MONEY ONLY - Educational Project**
