@@ -178,12 +178,26 @@ moves the balance exactly once, rejections release the reservation. A
 pull then imports payments other devices uploaded while this one was
 offline. First push binds the device's public key to its user
 (trust-on-first-use). Self-check: `cd backend && npm run test:phase6`.
-Honest limits (no auth, no balance arbitration yet, cleartext HTTP):
-`docs/OFFLINE_FIRST.md` section 8.
+Honest limits (no auth, cleartext HTTP; the balance half is Phase 7
+below): `docs/OFFLINE_FIRST.md` section 8.
 
-### 🔄 Next: Phase 7 - Double-spending protection
-Server-side balance arbitration: the server rejects spends beyond the
-sender's authoritative balance (statuses CONFLICT/REJECTED with reasons).
+### ✅ Phase 7 - Double-spending protection
+Server-side balance arbitration: every spend pushed at
+`POST /api/sync/push` is checked against the sender's authoritative
+balance - a cloned wallet's twin is refused (`INSUFFICIENT_BALANCE`)
+and its app corrects itself to the server's number. Four gates run per
+transaction: offline-payments-only (a pushed TOPUP would print money),
+the ₹500 cap again, sender-must-exist, then the balance itself. A first
+push from an unknown userId **onboards** the account with a
+server-decided ₹500 grant plus escrowed incoming payments (received
+before the account existed). Self-check: `cd backend && npm run
+test:phase7` (18 real-HTTP checks incl. the clone double-spend).
+Honest limits (no auth - first claim wins; load-compare-save, not
+atomic; arbitration only at sync): `docs/OFFLINE_FIRST.md` section 8.
+
+### 🔄 Next: Phase 8 - Advanced communication
+Bluetooth/NFC device-to-device transport (the QR flow keeps working as
+the fallback).
 
 ---
 
@@ -212,7 +226,7 @@ sender's authoritative balance (statuses CONFLICT/REJECTED with reasons).
 ---
 
 **Project**: OfflinePay
-**Status**: Phases 1-6 complete
+**Status**: Phases 1-7 complete
 **Date**: October 2026
 
 **⚠️ SIMULATED MONEY ONLY - Educational Project**

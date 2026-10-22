@@ -1,4 +1,4 @@
-# OfflinePay - Offline-First Design (Implemented, Phases 2-6)
+# OfflinePay - Offline-First Design (Implemented, Phases 2-7)
 
 This document describes **what the code actually does today**, not what is
 planned. Planned work is marked clearly as such.
@@ -152,19 +152,20 @@ Implemented in `mobile/lib/utils/balance.dart` (`validateOfflinePayment`):
 | Attack / failure | Prevented now? | What would fix it |
 |---|---|---|
 | Same phone spends twice while offline | ✅ yes (local reservation) | - |
-| Payer claims "I never paid" after handing over a receipt | 🟡 mitigated (Phase 5) | The receipt is signed; the payer's key cannot deny *these details*. Binding keys to people = Phase 6 public-key registration |
+| Payer claims "I never paid" after handing over a receipt | 🟡 mitigated (Phase 5) | The receipt is signed; the payer's key cannot deny *these details*. Binding keys to identities happens at first sync (Phases 6-7 TOFU) - still without authentication |
 | Receipt amount tampered between devices | ✅ yes (Phase 5) | Signatures cover amount/receiver/nonce/description/timestamp; receiver + backend both refuse tampered receipts |
-| Device reset / app reinstall resets local ledger | ❌ no | Phase 6 server is the authority after sync |
-| Two devices with cloned wallets spend the same balance | ❌ no | Server-side arbitration over the Phase 6 sync channel (Phase 7) |
+| Device reset / app reinstall resets local ledger | 🟡 partly (Phases 6-7) | The server keeps the confirmed ledger and pull restores it; a fresh device re-seeds its local profile from the demo value until sync arbitration re-anchors it |
+| Two devices with cloned wallets spend the same balance | ✅ stopped at sync (Phase 7) | Clones share ONE server balance: the first spend wins, later ones are refused (`INSUFFICIENT_BALANCE`) and the losing device corrects its local balance |
 | Backend down during sync | N/A | Requeue: transactions stay `PENDING_SYNC` |
 
 **Honest summary:** the local rules stop the *accidental and casual* case
-(the user spending the same offline balance twice on one device). Real
-double-spend guarantees require the authoritative server to arbitrate at
-sync time - Phase 6 now provides the sync channel and verification, but
-the balance arbitration itself is Phase 7. This prototype does not have
-the same guarantees as a banking system and must not be described as if
-it did.
+(the user spending the same offline balance twice on one device),
+instantly and offline. The cross-device case - clones - is stopped by
+the authoritative server at the NEXT sync (Phases 6+7 together: channel,
+verification, arbitration), not while offline, and subject to the
+authentication and race caveats in section 8. This prototype does not
+have the same guarantees as a banking system and must not be described
+as if it did.
 
 ---
 
@@ -256,12 +257,13 @@ established library, never hand-roll crypto - is fully honored.
 
 ---
 
-## 8. Synchronization flow (Phase 6, implemented)
+## 8. Synchronization flow (Phases 6-7, implemented)
 
 Implemented in `mobile/lib/services/sync_service.dart` (device) and
-`backend/src/controllers/syncController.js` (server), with a real
-end-to-end test over live HTTP in `backend/scripts/demo-phase6.js`
-(`npm run test:phase6`).
+`backend/src/controllers/syncController.js` (server), with real
+end-to-end tests over live HTTP in `backend/scripts/demo-phase6.js`
+(`npm run test:phase6`) and `backend/scripts/demo-phase7.js`
+(`npm run test:phase7`).
 
 **PUSH** (`POST /api/sync/push`): the device uploads its whole
 `PENDING_SYNC` queue as one batch, declaring its userId + Ed25519 public
@@ -298,15 +300,59 @@ by a different key are refused for that sender. This completes Phase
 5's trust story - but it is TOFU: there is no login, so the FIRST
 claim on a userId wins.
 
+### Phase 7: balance arbitration (implemented)
+
+The push checks above prove a transaction is *authentic*; Phase 7 makes
+sure it is *affordable*. Four more gates run per transaction before
+acceptance (in this order):
+
+7. **type gate** - a push may only carry `OFFLINE_PAYMENT` rows.
+   Top-ups and transfers are minted server-side through the REST APIs;
+   accepting a client-pushed TOPUP would let any app print money. (The
+   app's own seed top-up is `CONFIRMED` locally, so it never enters the
+   upload queue.)
+8. **offline limit** - the app's ₹500 per-transaction cap is enforced
+   server-side too: the client is modifiable, so a limit only it
+   enforces is not a limit.
+9. **sender registered** - somebody must exist to be debited. A valid
+   signature from an unregistered sender changes nothing.
+10. **balance gate** - `amount <= sender.balance`, evaluated against the
+    running balance so several spends in ONE batch debit in order. On
+    failure: `REJECTED` with code `INSUFFICIENT_BALANCE`. **This is the
+    clone-stopper**: twins share ONE server balance, so the first spend
+    wins and every later one is refused, whichever clone pushes it.
+    Reordering your own spends cannot extract more than the balance
+    allows either way.
+
+**Onboarding**: a push from an unknown `userId` creates the account:
+`balance = SERVER-decided grant (₹500, mirroring the app's demo seed) +
+escrow`, where escrow is every confirmed payment already stored for that
+user - money Alice paid Bob before Bob ever synced, accepted and debited
+from Alice, waiting with no account to credit until Bob's device shows
+up. The grant is a server constant ON PURPOSE: a client that could
+declare its own opening balance could declare itself rich and defeat
+the gate. No server-side welcome transaction is written - the device
+already has its own local seed row, and a second one would make it
+double-count on pull. The push response reports this as
+`registration: 'created'`.
+
+**The device corrects itself**: the push response carries `balance` -
+the sender's authoritative number AFTER the batch. When, and ONLY when,
+one of our transactions was refused with `INSUFFICIENT_BALANCE`, the app
+adopts that number locally: our richer figure was a clone's fantasy and
+would fail every future push otherwise. A `balance` field with no such
+refusal never overrides local bookkeeping.
+
 ### Honest limitations of sync
 
 | Claim | Reality |
 |---|---|
-| "Only the real user can sync as that user" | ❌ There is NO authentication in this prototype. Anyone who can reach the server may push/pull as any userId. TOFU key binding helps after the first honest registration, but the first claim on an identity is unverified. Production needs authenticated channels (tokens/login) + PKI-bound keys. |
-| "Double-spends are impossible now" | ❌ Phase 6 stores what passes signature/shape/replay checks WITHOUT checking the sender's balance - a device can push itself negative. Server-side balance arbitration is Phase 7. |
+| "Only the real user can sync as that user" | ❌ There is NO authentication in this prototype. Anyone who can reach the server may push/pull as any userId. TOFU key binding helps after the first honest registration, but the first claim on an identity is unverified - account, grant and key alike. Production needs authenticated channels (tokens/login) + PKI-bound keys. |
+| "Double-spends are impossible now" | 🟡 Across clones, at sync time: Phase 7's gate caps total outflow at the shared server balance (first spend wins), and the losing device self-corrects. What remains open: no auth (see above) and the gate is read-then-write (below). |
+| "The balance gate cannot be raced" | ❌ It is load-compare-save, not one atomic database operation: two truly SIMULTANEOUS pushes could both pass. The app syncs one queue at a time so this does not happen in practice here; production would use an atomic conditional decrement (`updateOne({balance: {$gte: amount}}, {$inc: ...})`). |
 | "Sync is automatic" | 🟡 Manual: the Home screen's Sync button. A production app would hook connectivity events and app resume; the service itself is trigger-agnostic. |
 | "The transport is secure" | ❌ Cleartext HTTP on the LAN. Signatures make TAMPERING detectable (push is verified server-side, pull re-verified device-side), but metadata, privacy and server identity are unprotected. Real deployments need TLS. |
-| "Sync creates the server-side user" | 🟡 No. Sync records transactions and binds keys opportunistically; onboarding users with authoritative starting balances is Phase 7's job. |
+| "Sync creates the server-side user" | ✅ On first push (Phase 7 onboarding): with a SERVER-decided ₹500 grant plus escrowed incoming payments - never a client-declared opening balance, never a server-side welcome row (that would double-count against the device's local seed). |
 | "A failed sync loses data" | ✅ No: push/pull failures leave the queue and balances untouched, and every step is idempotent - retrying is always safe. |
 
 ---
@@ -325,14 +371,16 @@ claim on a userId wins.
 | `test/wallet_provider_signature_test.dart` | Signing inside payments; key lazily generated, survives restart; two-device flow with real payer/receiver wallets; tampered receipts refused, unsigned accepted |
 | `test/pin_authorization_screen_test.dart` | Setup vs verify modes, mismatch handling, locked-state UI (fake wallet, no SQLite in FakeAsync) |
 | `test/show_transaction_qr_screen_test.dart` | Receipt shows the signing key fingerprint / admits "not signed" |
-| `test/sync_service_test.dart` | Push verdicts applied once (confirm/duplicate/reject/conflict), reservation release on rejection, pull merge (insert confirmed incoming, skip tampered, accept unsigned legacy, ignore foreign), failure leaves queue intact, full cycle balances |
+| `test/sync_service_test.dart` | Push verdicts applied once (confirm/duplicate/reject/conflict), reservation release on rejection, pull merge (insert confirmed incoming, skip tampered, accept unsigned legacy, ignore foreign), failure leaves queue intact, full cycle balances, Phase 7 balance correction on `INSUFFICIENT_BALANCE` (and only then), onboarding verdict |
 | `test/widget_test.dart` | Home screen boots from SQLite alone and renders the balances |
 
-Run: `cd mobile && flutter test` (92 tests, a few seconds).
+Run: `cd mobile && flutter test` (98 tests, a few seconds).
 
 Backend: `cd backend && npm test` (Phase 1 demo, runs without MongoDB),
 `npm run test:phase2` (QR replay protection), `npm run test:phase5`
-(Node verifying the Dart-signed interop vector), or `npm run test:phase6`
+(Node verifying the Dart-signed interop vector), `npm run test:phase6`
 (the REAL sync endpoints over HTTP with real signatures - confirm,
 idempotent duplicate, tampered/key-mismatch/replay rejection, conflict,
-pull).
+pull), or `npm run test:phase7` (balance arbitration end to end -
+affordable/unaffordable spends, the cloned-wallet double-spend, batch
+cumulative debits, type/limit/sender gates, TOFU onboarding + escrow).

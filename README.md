@@ -19,7 +19,7 @@ and double-spend controls.
 - ✅ Phase 4: Transaction PIN security (bcrypt hashing, 5-attempt lockout)
 - ✅ Phase 5: Cryptographic signatures (Ed25519 receipts, verified on scan + by Node)
 - ✅ Phase 6: Backend synchronization (push verdicts, pull merge, TOFU key binding)
-- 🔄 Phase 7: Double-spending protection (local half done: reservation + offline cap)
+- ✅ Phase 7: Double-spending protection (server-side balance arbitration, clone-stopper)
 - 🔄 Phase 8: Advanced communication (Bluetooth/NFC)
 
 ## Technology Stack
@@ -42,6 +42,10 @@ and double-spend controls.
 - Server-side sync verification: signature + registered-key binding +
   nonce replay + idempotent dedupe on every upload; pull re-verified on
   the device (Phase 6)
+- Server-side balance arbitration: every pushed spend is checked against
+  the sender's authoritative balance (a cloned wallet's twin is refused,
+  `INSUFFICIENT_BALANCE`), plus type/limit/sender gates; onboarding
+  grants are server-decided (Phase 7)
 
 ## What Works Right Now
 
@@ -62,6 +66,11 @@ and double-spend controls.
    payments other devices uploaded while this one was offline, and
    applies them to balances. Offline, it fails without losing anything
    and the queue just waits.
+7. **Double-spend arbitration** - the server debits ONE authoritative
+   balance per user: a cloned wallet's second device is refused at sync
+   (`INSUFFICIENT_BALANCE`) and its app corrects itself to the server's
+   number. First-time syncs onboard the account with a server-decided
+   ₹500 grant plus any payments escrowed while the device was away.
 
 ## Quick Start
 
@@ -76,7 +85,7 @@ npm test           # Phase 1 demo script, runs anywhere
 cd mobile
 flutter pub get
 flutter analyze
-flutter test       # 92 tests
+flutter test       # 98 tests
 flutter run        # device/emulator
 ```
 
@@ -106,11 +115,13 @@ offline-pay/
 ## Honest Limitations
 
 - Local rules stop double-spending **on one device**; server-side
-  balance arbitration (the authoritative half) is Phase 7 - Phase 6 sync
-  currently accepts what passes signature/shape/replay checks.
-- Sync has no authentication (trust-on-first-use key binding, anyone can
-  claim any userId) and runs over cleartext HTTP - fine for a LAN demo,
-  not for production.
+  arbitration (Phase 7) stops it **across clones at sync time** - one
+  shared server balance, first spend wins. Offline, the clone's spend is
+  accepted locally until the next Sync.
+- Sync has no authentication (trust-on-first-use: first claim on a
+  userId wins - account, grant and key) and runs over cleartext HTTP;
+  the balance gate is load-compare-save, not atomic. Fine for a LAN
+  demo, not for production.
 - Amounts use `double`; real financial systems use integer minor units.
 
 ---

@@ -81,12 +81,14 @@ SyncOutcome outcomeFor(
   Transaction tx,
   SyncOutcomeType type, {
   String? reason,
+  String? code,
 }) =>
     SyncOutcome(
       transactionId: tx.transactionId,
       outcomeType: type,
       serverStatus: type.name.toUpperCase(),
       reason: reason,
+      code: code,
     );
 
 void main() {
@@ -392,6 +394,150 @@ void main() {
       expect(wallet.availableBalance, 440);
       expect(wallet.pendingSyncCount, 0);
       expect(transport.pushedBatches, hasLength(1)); // push ran first
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Phase 7: server-side balance arbitration, as seen from the device.
+  //
+  // The server tests live in backend/scripts/demo-phase7.js (clone
+  // double-spend, onboarding, escrow, policy gates over real HTTP). Here
+  // we verify what the app DOES with those verdicts.
+  // ---------------------------------------------------------------------------
+  group('server balance arbitration (Phase 7)', () {
+    test('an INSUFFICIENT_BALANCE rejection corrects the local balance', () async {
+      // The clone scenario in miniature: our ledger says 500, but the
+      // server (already spent down by our twin) says otherwise.
+      final tx = await payOffline(400);
+      expect(wallet.availableBalance, 100);
+
+      transport.nextPushResult = PushResult(
+        registration: 'already-bound',
+        balance: 100,
+        outcomes: [
+          outcomeFor(
+            tx,
+            SyncOutcomeType.rejected,
+            reason: 'insufficient balance on the server: sender has 100, transaction needs 400',
+            code: 'INSUFFICIENT_BALANCE',
+          ),
+        ],
+      );
+      final report = (await wallet.syncNow())!;
+
+      final stored = (await db.getTransactionById(tx.transactionId))!;
+      expect(stored.status, TransactionStatus.rejected);
+      // The refusal releases the reservation (available = confirmed again)
+      // and the balance itself is corrected to the authoritative number.
+      expect(report.balanceCorrected, 100);
+      expect(wallet.confirmedBalance, 100);
+      expect(wallet.availableBalance, 100);
+      expect(report.summary, contains('corrected'));
+    });
+
+    test('a rejection for any OTHER reason does not touch the balance',
+        () async {
+      final tx = await payOffline(100);
+      transport.nextPushResult = PushResult(
+        registration: 'already-bound',
+        balance: 999, // even a wildly different number must be ignored
+        outcomes: [
+          outcomeFor(
+            tx,
+            SyncOutcomeType.rejected,
+            reason: 'invalid signature: the transaction does not match what the payer signed',
+            code: 'INVALID_SIGNATURE',
+          ),
+        ],
+      );
+      final report = (await wallet.syncNow())!;
+
+      expect((await db.getTransactionById(tx.transactionId))!.status,
+          TransactionStatus.rejected);
+      expect(report.balanceCorrected, isNull);
+      expect(wallet.confirmedBalance, 500); // local view untouched
+      expect(wallet.availableBalance, 500); // reservation released only
+    });
+
+    test('the balance field alone never overrides local bookkeeping',
+        () async {
+      final tx = await payOffline(100);
+      transport.nextPushResult = PushResult(
+        registration: 'already-bound',
+        balance: 480, // disagrees with our 400, but nothing was refused
+        outcomes: [outcomeFor(tx, SyncOutcomeType.confirmed)],
+      );
+      final report = (await wallet.syncNow())!;
+
+      expect(wallet.confirmedBalance, 400); // booked from the verdict...
+      expect(report.balanceCorrected, isNull); // ...not from the field
+    });
+
+    test('a mixed batch settles each way at once', () async {
+      // Both spends are creatable LOCALLY (500 - reserves = 100 left), but
+      // the server starts this push at only 150: the twin already spent
+      // 350 of the shared balance before we synced.
+      final ok = await payOffline(100);
+      final tooMuch = await payOffline(300);
+
+      transport.nextPushResult = PushResult(
+        registration: 'already-bound',
+        balance: 50, // 150 - 100 confirmed, then the 300 was refused
+        outcomes: [
+          outcomeFor(ok, SyncOutcomeType.confirmed),
+          outcomeFor(
+            tooMuch,
+            SyncOutcomeType.rejected,
+            reason: 'insufficient balance on the server: sender has 50, transaction needs 300',
+            code: 'INSUFFICIENT_BALANCE',
+          ),
+        ],
+      );
+      final report = (await wallet.syncNow())!;
+
+      expect((await db.getTransactionById(ok.transactionId))!.status,
+          TransactionStatus.confirmed);
+      expect((await db.getTransactionById(tooMuch.transactionId))!.status,
+          TransactionStatus.rejected);
+      // Local view said 400 after the first confirmation - the server's
+      // authoritative 50 wins because a spend was refused.
+      expect(wallet.confirmedBalance, 50);
+      expect(wallet.availableBalance, 50);
+      expect(wallet.pendingSyncCount, 0);
+      expect(report.balanceCorrected, 50);
+    });
+
+    test('first-ever push reports the onboarding verdict', () async {
+      await payOffline(50);
+      transport.nextPushResult = const PushResult(
+        registration: 'created',
+        balance: 450,
+        outcomes: [],
+      );
+      final report = (await wallet.syncNow())!;
+
+      expect(report.onboarded, isTrue);
+      expect(report.summary, contains('registered'));
+    });
+
+    test('SyncOutcome decodes the wire code field', () {
+      final outcome = SyncOutcome.fromJson({
+        'transactionId': 'TXN_x',
+        'outcome': 'REJECTED',
+        'serverStatus': 'REJECTED',
+        'reason': 'insufficient balance on the server: sender has 0, transaction needs 5',
+        'code': 'INSUFFICIENT_BALANCE',
+      });
+      expect(outcome.code, 'INSUFFICIENT_BALANCE');
+      expect(outcome.outcomeType, SyncOutcomeType.rejected);
+      // Older servers (or plain rejections) simply omit the field.
+      expect(
+        SyncOutcome.fromJson({
+          'transactionId': 'TXN_y',
+          'outcome': 'REJECTED',
+        }).code,
+        isNull,
+      );
     });
   });
 }

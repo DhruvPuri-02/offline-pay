@@ -80,7 +80,7 @@ Alice (₹500)  ──[QR Code]──>  Bob (Merchant)
 - Offline balance calculation with the three-balance split
   (available / confirmed / pending) in `mobile/lib/utils/balance.dart`
 - First-half of double-spend controls: local balance reservation and a
-  per-transaction offline cap (server-side arbitration arrives in Phase 6/7)
+  per-transaction offline cap (the server-side half arrived in Phase 7)
 
 **Key design choice**: incoming pending payments do NOT raise the available
 balance - see `docs/OFFLINE_FIRST.md` section 5 for why.
@@ -169,9 +169,9 @@ documented honestly in `docs/OFFLINE_FIRST.md` sections 7 and 8.
 - Manual **Sync** button on Home with queue count + last sync verdict;
   failures leave the queue untouched (offline-first contract)
 
-**Honest scope**: balance arbitration is NOT here yet - a device can push
-itself negative; server-side double-spend arbitration is Phase 7. There is
-also no authentication (TOFU first-claim-wins) and the transport is
+**Honest scope**: Phase 6 by itself did not arbitrate balances (a device
+could push itself negative) - that gap is closed by Phase 7 below.
+Still open even now: no authentication (TOFU first-claim-wins) and
 cleartext HTTP. See `docs/OFFLINE_FIRST.md` section 8.
 
 **Transaction Status Flow**:
@@ -183,15 +183,8 @@ PENDING_SYNC → SYNCING → CONFIRMED
                    CONFLICT
 ```
 
-### 🔄 Phase 7: Double-Spending Protection
-**Goal**: Prevent spending same money twice offline
-
-**Features**:
-- Offline spending limits
-- Transaction sequence numbers
-- Local balance reservation
-- Server-side conflict detection
-- Reconciliation logic
+### ✅ Phase 7: Double-Spending Protection
+**Goal**: Prevent spending the same money twice - authoritatively, at sync
 
 **The Challenge**:
 ```
@@ -204,11 +197,52 @@ While offline:
 How to detect and prevent this?
 ```
 
-**Solution Approaches**:
-- Maximum offline transaction limit
-- Balance hold/reservation
-- Server reconciliation on sync
-- First-received-wins policy
+**How this project answers it - in layers**:
+
+*On one device (Phase 3, instantly, offline):* balance reservation -
+Bob's ₹400 is subtracted from `available` the moment the payment is
+created, so Charlie's ₹400 is refused before it ever exists. Plus the
+₹500 per-transaction offline cap.
+
+*Across cloned devices (Phase 7, authoritative, at sync):* two devices
+claiming the same userId share ONE server balance.
+`POST /api/sync/push` runs every spend through four gates in order:
+
+1. **type** - offline payments only (a client-pushed TOPUP would print money)
+2. **offline limit** - the ₹500 cap again, server-side (the client is modifiable)
+3. **sender registered** - a valid signature from an unknown account debits nothing
+4. **balance** - `amount <= balance` against the running balance
+
+The first spend wins; the twin's payment is `REJECTED` with code
+`INSUFFICIENT_BALANCE`, and its app adopts the server's balance instead
+of its own fantasy number (the push response carries the authoritative
+`balance` after every batch).
+
+**What else Phase 7 built**:
+- **Server-side onboarding**: a first push from an unknown userId
+  creates the account with a SERVER-decided ₹500 grant plus escrowed
+  incoming payments (received before the account existed). Clients
+  cannot declare their own opening balance - "I am rich" would defeat
+  the gate; no server-side welcome row is written (the device already
+  has its local seed one - a second would double-count on pull)
+- **`npm run test:phase7`** proves all of it over real HTTP with real
+  signatures: affordable/unaffordable spends, batch-cumulative debits,
+  no double-debit on duplicate re-push, the clone double-spend itself,
+  all four gates, TOFU onboarding and escrow landing
+
+**Honest scope**: the balance gate is load-compare-save, not one atomic
+database operation - two truly SIMULTANEOUS pushes could race (the app
+syncs serially; production would use atomic conditional decrements).
+There is still no authentication, and arbitration happens only AT SYNC:
+offline, a clone's spend is accepted locally until the next Sync runs.
+See `docs/OFFLINE_FIRST.md` section 8.
+
+**Solution approaches (all now implemented)**:
+- Maximum offline transaction limit ✅ (device + server)
+- Balance hold/reservation ✅ (device) + authoritative ledger (server)
+- Server reconciliation on sync ✅ (Phase 6 push/pull)
+- First-received-wins policy ✅ (first copy of a transactionId is kept;
+  first spend of a shared balance wins)
 
 ### 🔄 Phase 8: Advanced Communication
 **Goal**: Alternative device-to-device communication
@@ -369,10 +403,20 @@ Device                              Backend
 - Verify offline storage
 
 ### Phase 7 Testing
-- Attempt double-spending
-- Verify rejection
-- Test conflict resolution
-- Confirm balance integrity
+- Push an affordable spend: CONFIRMED, balance moves (server + REST view)
+- Push an unaffordable spend: REJECTED `INSUFFICIENT_BALANCE`, balance unchanged
+- Batch of spends: debits run cumulatively, in order
+- The CLONE: same userId + same copied key, spend refused, total capped
+- Policy gates: client TOPUP refused, >₹500 refused, unknown sender refused
+- Duplicate re-push: DUPLICATE, never a second debit
+- Unknown device onboards (server-decided grant + escrow) and is then
+  arbitrated like any other account
+- Device side (`flutter test`): balance correction fires ONLY on
+  `INSUFFICIENT_BALANCE`; other rejections and lone balance fields never
+  override local bookkeeping
+
+All of the above run in `npm run test:phase7` (18 checks, real HTTP) and
+`test/sync_service_test.dart`.
 
 ## Important Notes
 

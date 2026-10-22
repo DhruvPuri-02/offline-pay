@@ -16,9 +16,10 @@ import '../utils/balance.dart';
 /// The contract (see backend/src/controllers/syncController.js):
 ///
 ///   PUSH - upload every PENDING_SYNC transaction; the server verifies
-///          signatures (Phase 5), stores each payment once, refuses
-///          replays, and answers with a per-transaction outcome that we
-///          apply to the local ledger.
+///          signatures (Phase 5), ARBITRATES each spend against the
+///          sender's authoritative balance (Phase 7), stores each payment
+///          once, refuses replays, and answers with a per-transaction
+///          outcome that we apply to the local ledger.
 ///
 ///   PULL - download everything the server knows about us: payments the
 ///          OTHER device uploaded while we were offline, plus statuses.
@@ -35,6 +36,10 @@ import '../utils/balance.dart';
 ///     transaction stops being "unsettled", which RELEASES its local
 ///     reservation (the money becomes spendable again, because the
 ///     server refused to spend it)
+///   server rejects INSUFFICIENT_BALANCE -> additionally adopt the
+///     server's stated balance (Phase 7): our local figure was a clone's
+///     fantasy - the twin spent the shared money first, and the server's
+///     number is the one every future push will be judged against
 ///
 /// Transport failures are NOT errors of the queue: if push or pull
 /// throws, nothing is modified, transactions stay PENDING_SYNC, and the
@@ -72,8 +77,24 @@ class SyncService {
           transactions: pending,
         );
         report.pushed = pending.length;
+        report.onboarded = push.registration == 'created';
         for (final outcome in push.outcomes) {
           await _applyOutcome(outcome, userId, report);
+        }
+
+        // Phase 7: if the server refused a spend because the sender's
+        // authoritative balance did not cover it, the server's number is
+        // the truth - a cloned twin may have spent the money first, and
+        // keeping our local (richer) figure would just fail every future
+        // sync. Adopt it ONLY in that case: ordinary confirmations are
+        // already booked by _applyOutcome, and a lone `balance` field
+        // must never override local bookkeeping on its own.
+        final insufficient = push.outcomes.any(
+          (o) => o.code == 'INSUFFICIENT_BALANCE',
+        );
+        if (insufficient && push.balance != null) {
+          await _db.updateConfirmedBalance(userId, push.balance!);
+          report.balanceCorrected = push.balance;
         }
       }
     } catch (error) {
@@ -300,6 +321,7 @@ class HttpSyncTransport implements SyncTransport {
       outcomes: (data['results'] as List)
           .map((r) => SyncOutcome.fromJson(r as Map<String, dynamic>))
           .toList(),
+      balance: (data['balance'] as num?)?.toDouble(),
     );
   }
 
@@ -337,6 +359,7 @@ class SyncOutcome {
     required this.outcomeType,
     this.serverStatus,
     this.reason,
+    this.code,
   });
 
   factory SyncOutcome.fromJson(Map<String, dynamic> json) {
@@ -351,6 +374,7 @@ class SyncOutcome {
       },
       serverStatus: json['serverStatus'] as String?,
       reason: json['reason'] as String?,
+      code: json['code'] as String?,
     );
   }
 
@@ -358,14 +382,24 @@ class SyncOutcome {
   final SyncOutcomeType outcomeType;
   final String? serverStatus;
   final String? reason;
+
+  /// Stable machine-readable rejection class from the server (Phase 7),
+  /// e.g. INSUFFICIENT_BALANCE. [reason] is the human sentence; [code] is
+  /// what the app reacts to without string-matching prose.
+  final String? code;
 }
 
 class PushResult {
-  const PushResult({required this.registration, required this.outcomes});
+  const PushResult({required this.registration, required this.outcomes, this.balance});
 
-  /// Key registration verdict ('bound', 'already-bound', ...).
+  /// Key registration verdict ('created' on first-ever push, then
+  /// 'bound' / 'already-bound' / ...).
   final String registration;
   final List<SyncOutcome> outcomes;
+
+  /// The sender's authoritative server balance AFTER this batch
+  /// (Phase 7) - null when the server did not state one.
+  final double? balance;
 }
 
 class PullResult {
@@ -387,12 +421,22 @@ class SyncReport {
   int skippedForeign = 0;
   String? errorMessage;
 
+  /// Phase 7: this push created the server-side account (first contact
+  /// with this userId - trust-on-first-use onboarding).
+  bool onboarded = false;
+
+  /// Phase 7: set when the server refused a spend for insufficient
+  /// balance and this device adopted the authoritative server balance.
+  /// The value is what the balance was corrected TO (null = untouched).
+  double? balanceCorrected;
+
   bool get ok => errorMessage == null;
 
   /// One-line human summary for the Home screen.
   String get summary {
     if (errorMessage != null) return errorMessage!;
     final parts = <String>[
+      if (onboarded) 'account registered with server',
       if (confirmed > 0) '$confirmed confirmed',
       if (duplicates > 0) '$duplicates already known',
       if (rejected > 0) '$rejected rejected',
@@ -400,6 +444,7 @@ class SyncReport {
       if (pulledNew > 0) '$pulledNew received',
       if (pulledUpdated > 0) '$pulledUpdated updated',
       if (skippedTampered > 0) '$skippedTampered tampered (skipped)',
+      if (balanceCorrected != null) 'balance corrected to the server\'s number',
     ];
     return parts.isEmpty ? 'Already up to date' : parts.join(', ');
   }

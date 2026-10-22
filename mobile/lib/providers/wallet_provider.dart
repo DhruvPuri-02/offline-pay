@@ -220,8 +220,9 @@ class WalletProvider with ChangeNotifier {
       amount: firstRunSeedBalance,
       type: TransactionType.topup,
       // Marked CONFIRMED because it is the wallet's *baseline*, not an
-      // offline payment awaiting reconciliation. The backend gets seeded
-      // with the same figure during Phase 6.
+      // offline payment awaiting reconciliation. The server grants the
+      // same figure when this wallet first syncs (Phase 7 onboarding) -
+      // and only the server decides that number; we merely mirror it.
       status: TransactionStatus.confirmed,
       description: 'Initial simulated balance (demo seed)',
       timestamp: DateTime.now(),

@@ -15,6 +15,11 @@ Backend server for OfflinePay - An offline-first digital payment prototype.
   per-transaction verdicts: signature + key binding + replay + idempotent
   dedupe) and `POST /api/sync/pull`; real end-to-end test in
   `npm run test:phase6`
+- **Phase 7**: balance arbitration - the four push gates (type / offline
+  cap / sender registered / balance), TOFU account onboarding with a
+  server-decided grant + escrow, and the post-batch `balance` the app
+  uses to self-correct; clone double-spend proven in
+  `npm run test:phase7`
 - **Replay protection**: duplicate-nonce uploads are rejected with
   `409 DUPLICATE_NONCE` (database-enforced, race-safe)
 - **Zero-install database**: runs against an in-memory MongoDB when no
@@ -197,24 +202,47 @@ Responses:
 > endpoint below builds on the same checks; offline payments in the app are
 > NOT sent here in real time - they wait in the device's pending queue.
 
-### Offline Sync (Phase 6)
+### Offline Sync (Phases 6-7)
 
 **POST /api/sync/push** - batch upload of a device's PENDING_SYNC queue
 ```
 body: { userId?, publicKey?, transactions: [ transaction, ... ] }
 200:  { data: { registration, results: [
-        { transactionId, outcome, serverStatus, reason }
-      ], serverTime } }
+        { transactionId, outcome, serverStatus, reason, code }
+      ], balance, serverTime } }
 ```
 Per transaction, checked in order: shape -> signature (offline payments
 must be Ed25519-signed) -> registered-key binding (TOFU: first push
 binds `User.publicKey`; later mismatches refused) -> nonce replay ->
-transactionId idempotency. Outcomes:
-- `CONFIRMED` - stored, server balances of known users move
+transactionId idempotency -> **Phase 7 gates**: type (only
+`OFFLINE_PAYMENT` may be pushed - a client TOPUP would print money) ->
+offline cap (amount <= 500, mirrored from the app - the client is
+modifiable) -> sender must be registered -> **balance gate**
+(`amount <= balance`, against the running balance so a batch debits in
+order).
+
+**Onboarding**: a first push from an unknown `userId` creates the
+account with a SERVER-decided 500 grant plus escrow (confirmed payments
+already waiting for that receiver), reported as
+`registration: 'created'`. Clients cannot declare their own opening
+balance, and no welcome transaction row is written - the device already
+has its local seed one.
+
+Outcomes:
+- `CONFIRMED` - stored, sender debited, receiver credited (an unknown
+  receiver's credit is escrowed until THEIR onboarding)
 - `DUPLICATE` - identical copy already stored (both devices push their
   copy of a payment; ACKed, never double-credited)
 - `CONFLICT` - same transactionId, different content: first copy kept
-- `REJECTED` - with `reason` (tampered signature, unsigned, replay, ...)
+- `REJECTED` - human `reason` plus stable `code`: `MALFORMED`,
+  `UNSIGNED`, `INVALID_SIGNATURE`, `KEY_MISMATCH`, `NONCE_REPLAY`,
+  `NOT_OFFLINE_PAYMENT`, `OVER_LIMIT`, `SENDER_NOT_REGISTERED`,
+  `INSUFFICIENT_BALANCE`
+
+`data.balance` is the pushing user's authoritative balance AFTER the
+batch (null when no userId was claimed). The app adopts it locally if,
+and only if, it sees an `INSUFFICIENT_BALANCE` refusal - a cloned
+device's local figure was a fantasy and would fail every later push.
 
 One bad transaction never hides the fate of the others in the batch.
 
@@ -227,9 +255,12 @@ Returns payments the OTHER device uploaded while this one was offline,
 plus statuses. Optional `since` for cheap incremental syncs.
 
 > Honest limits: no authentication (anyone can claim any userId - TOFU
-> binding only) and NO balance arbitration yet (a batch can push a sender
-> negative): both are Phase 7/production concerns, documented in
-> docs/OFFLINE_FIRST.md section 8. Transport is cleartext HTTP on the LAN.
+> first-claim-wins: account, grant and key alike), and the balance gate
+> is load-compare-save rather than one atomic database operation (two
+> truly SIMULTANEOUS pushes could race; the app syncs one queue at a
+> time, production would use atomic conditional decrements). Both are
+> documented in docs/OFFLINE_FIRST.md section 8. Transport is cleartext
+> HTTP on the LAN.
 
 ## Data Models
 
@@ -241,7 +272,7 @@ plus statuses. Optional `since` for cheap incremental syncs.
   name: String,
   walletId: String (unique),
   balance: Number,
-  publicKey: String (set when Phase 6 registers the device key),
+  publicKey: String (set at first sync - Phase 6/7 TOFU),
   transactionPinHash: String (stays null by design - see Security Notes),
   createdAt: Date,
   updatedAt: Date
@@ -323,8 +354,8 @@ node scripts/verify_receipt.js receipt.json   # paste a receipt from the app
 - [x] **Phase 3**: Offline-first mobile app (backend unchanged)
 - [x] **Phase 4**: Transaction PIN security (app-side only; PIN never syncs)
 - [x] **Phase 5**: Cryptographic signatures (verifier + interop vector)
-- [x] **Phase 6**: Backend synchronization (push/pull + TOFU key registration; balance arbitration is Phase 7)
-- [ ] **Phase 7**: Double-spending protection (server-side arbitration)
+- [x] **Phase 6**: Backend synchronization (push/pull + TOFU key registration)
+- [x] **Phase 7**: Double-spending protection (server-side balance arbitration + onboarding)
 - [ ] **Phase 8**: Advanced communication (Bluetooth/NFC)
 
 ## Project Structure
@@ -357,7 +388,8 @@ backend/
 │   ├── demo-phase2.js        # QR flow demonstration
 │   ├── test-signature.js     # Phase 5: Dart<->Node interop vector
 │   ├── verify_receipt.js     # Phase 5: verify a receipt JSON by hand
-│   └── demo-phase6.js        # Phase 6: REAL sync endpoints over HTTP
+│   ├── demo-phase6.js        # Phase 6: REAL sync endpoints over HTTP
+│   └── demo-phase7.js        # Phase 7: balance arbitration over HTTP
 ├── .env.example
 ├── .env
 └── package.json
@@ -378,10 +410,15 @@ backend/
 - Sync verifies everything it stores (Phase 6): shape, signature,
   registered-key binding (TOFU: first push binds userId -> public key,
   later mismatches refused), nonce replay, and transactionId idempotency.
-  What it deliberately does NOT do yet is check the sender's balance -
-  see the line below.
+- Sync ARBITRATES every spend (Phase 7): only offline payments within
+  the ₹500 cap from a registered sender, against the sender's
+  authoritative balance - a cloned wallet's twin gets
+  `INSUFFICIENT_BALANCE`, and onboarding grants are server-decided so a
+  client cannot declare itself rich. Known honest gap: the gate is
+  load-compare-save, not one atomic DB operation (see section 8 of
+  docs/OFFLINE_FIRST.md), and there is still no authentication.
 - Double-spending protection via server-side balance arbitration
-  (Phase 7) - the last major piece still missing.
+  (Phase 7) - DONE; Phase 8 (Bluetooth/NFC transport) remains.
 
 ## License
 
