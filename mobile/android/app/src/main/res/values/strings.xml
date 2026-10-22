@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Phase 8: strings shown by Android in Settings → Tap & pay for the
+     OfflinePay NFC emulation service (see res/xml/apduservice.xml). -->
+<resources>
+    <string name="servicedesc">OfflinePay nearby message exchange</string>
+    <string name="aiddescription">Serves OfflinePay payment requests and receipts</string>
+</resources>

@@ -4,6 +4,8 @@ import 'package:provider/provider.dart';
 import '../models/qr_message.dart';
 import '../models/qr_payload.dart';
 import '../providers/wallet_provider.dart';
+import '../services/peer/lan_peer.dart';
+import '../services/peer/peer_transport.dart';
 import '../utils/payment_exception.dart';
 import '../widgets/qr_scanner_view.dart';
 import 'pin_authorization_screen.dart';
@@ -27,6 +29,47 @@ class ScanQRScreen extends StatefulWidget {
 class _ScanQRScreenState extends State<ScanQRScreen> {
   QRPayload? _request;
   bool _submitting = false;
+
+  // Phase 8: where the fetched request came from, so the receipt can be
+  // sent back to the same device after paying (null = scanned/pasted QR,
+  // which has no return address - the QR fallback covers it).
+  final TextEditingController _lanAddressController = TextEditingController();
+  LanTarget? _lanTarget;
+  bool _fetchingLan = false;
+
+  @override
+  void dispose() {
+    _lanAddressController.dispose();
+    super.dispose();
+  }
+
+  /// Phase 8: fetch the receiver's request from their LAN host and feed
+  /// it through the EXACT same validation path as a scanned QR code -
+  /// a wire message is a wire message, however it arrived.
+  Future<void> _fetchFromLan() async {
+    if (_fetchingLan || _submitting) return;
+
+    final LanTarget target;
+    try {
+      target = LanTarget.parse(_lanAddressController.text);
+    } on PeerTransportException catch (e) {
+      _showError(e.reason);
+      return;
+    }
+
+    setState(() => _fetchingLan = true);
+    try {
+      final requestJson = await LanPeerClient().fetchRequest(target);
+      _onScanned(requestJson); // rejects garbage/expired like any scan
+      if (mounted && _request != null) {
+        setState(() => _lanTarget = target);
+      }
+    } on PeerTransportException catch (e) {
+      _showError(e.reason);
+    } finally {
+      if (mounted) setState(() => _fetchingLan = false);
+    }
+  }
 
   void _onScanned(String raw) {
     if (_submitting) return;
@@ -90,7 +133,12 @@ class _ScanQRScreenState extends State<ScanQRScreen> {
 
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => ShowTransactionQRScreen(transaction: tx)),
+        MaterialPageRoute(
+          builder: (_) => ShowTransactionQRScreen(
+            transaction: tx,
+            lanTarget: _lanTarget,
+          ),
+        ),
       );
     } on PaymentException catch (e) {
       // Normally handled inside the PIN screen; safety net otherwise.
@@ -101,7 +149,10 @@ class _ScanQRScreenState extends State<ScanQRScreen> {
   }
 
   void _reset() {
-    setState(() => _request = null);
+    setState(() {
+      _request = null;
+      _lanTarget = null;
+    });
   }
 
   @override
@@ -111,9 +162,56 @@ class _ScanQRScreenState extends State<ScanQRScreen> {
       body: _request == null
           ? Padding(
               padding: const EdgeInsets.all(16),
-              child: QrScannerView(onValueScanned: _onScanned),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: QrScannerView(onValueScanned: _onScanned),
+                  ),
+                  const SizedBox(height: 12),
+                  _buildLanFetchRow(),
+                ],
+              ),
             )
           : _buildConfirmation(context),
+    );
+  }
+
+  /// Phase 8: fetch the request from a receiver's LAN host by address.
+  Widget _buildLanFetchRow() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          'From a nearby device (same Wi-Fi)',
+          style: TextStyle(color: Colors.grey, fontSize: 13),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _lanAddressController,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: '192.168.1.5:48231',
+                  isDense: true,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            FilledButton.tonal(
+              onPressed: _fetchingLan ? null : _fetchFromLan,
+              child: _fetchingLan
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Fetch'),
+            ),
+          ],
+        ),
+      ],
     );
   }
 

@@ -1,4 +1,52 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- ============================================================
+         Phase 8: peer carriers + general networking.
+         These are hand-written (not generated) so each one can carry
+         the reason it exists - see docs/OFFLINE_FIRST.md section 10.
+         ============================================================ -->
+
+    <!-- LAN carrier (lan_peer.dart) + Phase 6 sync over HTTP.
+         Note: debug/profile manifests already inject INTERNET; declaring
+         it here makes release builds work too. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+
+    <!-- Bluetooth/direct carrier (nearby_peer.dart, Google Nearby
+         Connections). Pre-Android-12 names with maxSdkVersion, then the
+         Android 12+ split permissions. Location is needed for the
+         pre-12 BLE scan path even though transfers themselves carry no
+         location. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30"/>
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30"/>
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="30"/>
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"/>
+    <!-- Android 13+ Wi-Fi half of Nearby Connections. -->
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"/>
+
+    <!-- NFC carrier (nfc_peer.dart): install-time permission only, no
+         runtime prompt exists for NFC on Android. -->
+    <uses-permission android:name="android.permission.NFC"/>
+    <uses-feature
+        android:name="android.hardware.nfc"
+        android:required="false"/>
+    <uses-feature
+        android:name="android.hardware.nfc.hce"
+        android:required="false"/>
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false"/>
+
     <application
         android:label="offlinepay"
         android:name="${applicationName}"
@@ -25,6 +73,26 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- flutter_nfc_hce (Phase 8): the host-card-emulation service
+             that answers a reader's SELECT by streaming the NDEF message
+             our app registered (the payment/receipt JSON). Required by
+             the plugin's README; AID and capabilities live in
+             res/xml/apduservice.xml. -->
+        <service
+            android:name="com.novice.flutter_nfc_hce.KHostApduService"
+            android:exported="true"
+            android:enabled="true"
+            android:permission="android.permission.BIND_NFC_SERVICE">
+            <intent-filter>
+                <action android:name="android.nfc.cardemulation.action.HOST_APDU_SERVICE"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.nfc.cardemulation.host_apdu_service"
+                android:resource="@xml/apduservice"/>
+        </service>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

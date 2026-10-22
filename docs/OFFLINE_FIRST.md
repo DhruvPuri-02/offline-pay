@@ -1,4 +1,4 @@
-# OfflinePay - Offline-First Design (Implemented, Phases 2-7)
+# OfflinePay - Offline-First Design (Implemented, Phases 2-8)
 
 This document describes **what the code actually does today**, not what is
 planned. Planned work is marked clearly as such.
@@ -372,9 +372,11 @@ refusal never overrides local bookkeeping.
 | `test/pin_authorization_screen_test.dart` | Setup vs verify modes, mismatch handling, locked-state UI (fake wallet, no SQLite in FakeAsync) |
 | `test/show_transaction_qr_screen_test.dart` | Receipt shows the signing key fingerprint / admits "not signed" |
 | `test/sync_service_test.dart` | Push verdicts applied once (confirm/duplicate/reject/conflict), reservation release on rejection, pull merge (insert confirmed incoming, skip tampered, accept unsigned legacy, ignore foreign), failure leaves queue intact, full cycle balances, Phase 7 balance correction on `INSUFFICIENT_BALANCE` (and only then), onboarding verdict |
+| `test/lan_peer_test.dart` | Phase 8 LAN carrier on real loopback sockets: request fetch byte-for-byte, receipt round-trip to the host callback, garbage receipts answered 400 without firing, hostile non-JSON servers refused, dead-port friendly errors, stop()/404 semantics, address parsing rules, ReceiptInbox queue/claim/stream |
+| `test/nfc_ndef_decode_test.dart` | Phase 8: NDEF Text-record decoding (what the HCE plugin emits); URI/MIME/UTF-16/overlong records refused instead of guessed |
 | `test/widget_test.dart` | Home screen boots from SQLite alone and renders the balances |
 
-Run: `cd mobile && flutter test` (98 tests, a few seconds).
+Run: `cd mobile && flutter test` (120 tests, a few seconds).
 
 Backend: `cd backend && npm test` (Phase 1 demo, runs without MongoDB),
 `npm run test:phase2` (QR replay protection), `npm run test:phase5`
@@ -384,3 +386,78 @@ idempotent duplicate, tampered/key-mismatch/replay rejection, conflict,
 pull), or `npm run test:phase7` (balance arbitration end to end -
 affordable/unaffordable spends, the cloned-wallet double-spend, batch
 cumulative debits, type/limit/sender gates, TOFU onboarding + escrow).
+
+---
+
+## 10. Peer-to-peer carriers (Phase 8, implemented)
+
+### The seam
+
+Phases 2-7 moved two JSON documents between phones - `PAYMENT_REQUEST`
+and `TRANSACTION_RECEIPT` - and QR was the only pipe. Phase 8 separates
+the *messages* from the *media*: `mobile/lib/services/peer/` holds one
+contract (see `peer_transport.dart`) and several implementations of it:
+
+| Carrier | File | Status |
+|---|---|---|
+| QR (camera/paste) | `widgets/qr_scanner_view.dart` | Reference carrier, unchanged - works everywhere, needs no radio |
+| Wi-Fi LAN | `services/peer/lan_peer.dart` | **Fully implemented and fully tested** (`test/lan_peer_test.dart`, real sockets on loopback) |
+| Bluetooth / Wi-Fi Direct | `services/peer/nearby_peer.dart` | Service-level only, **hardware-unverified** - analyze-clean against the real plugin API, never executed on a device |
+| NFC tap | `services/peer/nfc_peer.dart` | Service-level only, **hardware-unverified, Android-only** - only its pure NDEF decoder is unit-tested |
+
+One rule holds for every carrier: **the media never changes the trust
+model.** A receipt arriving by any route lands in `ReceiptInbox` or
+`RecordPaymentScreen`'s scanner and goes through the identical
+signature verification + explicit user confirmation a scanned QR gets.
+Nothing on any wire auto-records anything.
+
+### The LAN channel (the one we can prove)
+
+The receiver switches on "Also serve via Wi-Fi" in the Receive screen;
+their phone runs a tiny HTTP host (`HttpServer`, ephemeral port) that
+serves the request JSON - byte-for-byte the same JSON the QR encodes -
+and accepts `POST /receipt` afterwards. The payer types `ip:port` in
+Scan → "From a nearby device" → Fetch, and the JSON enters the normal
+scan pipeline (expiry check, confirm card, PIN, signing). After paying,
+the payer's receipt screen posts the receipt back to the same address;
+it appears in the receiver's inbox with a pointer to "I received a
+payment", where the usual verification and confirmation run.
+
+Deliberate choices, all visible in `test/lan_peer_test.dart`:
+- HTTP with `Content-Length` framing instead of a hand-rolled socket
+  protocol: a half-written or hostile message cannot desynchronise us.
+- The host refuses to start serving anything that is not a JSON object,
+  answers 400 to malformed receipts (callback never fires), 404 to
+  unknown paths, and becomes unreachable on `stop()`.
+- The client converts timeouts/unreachable/format failures into
+  `PeerTransportException` with human-readable reasons - no raw
+  `SocketException` ever reaches the UI.
+
+### Bluetooth and NFC - exactly what they are
+
+Both adapters are written against the installed plugins' real source
+(`nearby_connections` 4.3.0, `flutter_nfc_hce` 0.1.8, `nfc_manager`
+4.2.1 - APIs read from the pub cache, every call analyze-verified).
+They are **not** wired into the screens, because this development
+environment has no Android SDK and no physical device: wiring UI paths
+that cannot be run once would ship untested interactive code. The
+integration points are documented in each file's header - both adapters
+speak the same two messages, so a screen plugs them in exactly where
+the LAN ones plug in today.
+
+The Bluetooth adapter uses Google Nearby Connections rather than
+`flutter_blue_plus`: phone-to-phone needs both a serving and a
+discovering side, and `flutter_blue_plus` 2.x is central-only (no
+advertising or GATT server - checked in its source), so it could never
+complete the handshake alone.
+
+### Honest limitations of the carriers
+
+| Claim | Reality |
+|---|---|
+| "Bluetooth payment transfer works" | 🟡 Service-level code exists and is API-correct; it has never run on hardware from this repo. Treat as reviewed scaffolding. |
+| "NFC tap-to-pay works" | 🟡 Same status, Android-only (iOS cannot emulate an NFC tag). Whether the ~700-byte signed receipt fits reliably over HCE is exactly the kind of thing only hardware can confirm - the QR fallback always remains. |
+| "Anyone nearby can use the LAN channel" | By design, and the same exposure as a QR in public: the served request contains no secret (the PIN never leaves the device), and a hostile device can only post receipts into the inbox, where signature verification and the user's confirmation still stand. A LAN device could also *fetch a request the receiver did not intend for it* - equivalent to shoulder-surfing the QR. |
+| "The LAN channel is encrypted/authenticated" | ❌ No. Plain HTTP on the local network: anyone on the same Wi-Fi can read the (public) request or inject junk receipts that will simply fail verification. Pairing is by address only - there is no authentication of *which* device you reached. Production would want TLS with pinned keys or an authenticated pairing step. |
+| "Receiving a nearby receipt books money automatically" | ✅ Never. Carriers only move bytes into `ReceiptInbox`; recording requires the signature verdict and the user's tap, exactly like QR. |
+| "Bluetooth/NFC need no permissions" | ❌ Android 12+ runtime prompts (handled by the adapter, denial raises a readable error); NFC is install-time only. The manifest changes are in `mobile/android/app/src/main/AndroidManifest.xml`, each annotated. |

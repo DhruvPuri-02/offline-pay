@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/qr_message.dart';
 import '../models/transaction.dart';
 import '../providers/wallet_provider.dart';
+import '../services/receipt_inbox.dart';
 import '../services/signature_service.dart';
 import '../utils/payment_exception.dart';
 import '../widgets/qr_scanner_view.dart';
@@ -32,9 +35,44 @@ class _RecordPaymentScreenState extends State<RecordPaymentScreen> {
   String? _resultMessage;
   bool _resultIsError = false;
   _SignatureState _signatureState = _SignatureState.unsigned;
+  StreamSubscription<String>? _inboxSub;
+
+  /// True from the moment a message is accepted until its async signature
+  /// check finishes. Without this, a second receipt arriving mid-verify
+  /// would pass the `_pending != null` guard (set only AFTER the await)
+  /// and overwrite the first one.
+  bool _handling = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Phase 8: a receipt can arrive over the LAN host while this screen
+    // is closed (it sits in ReceiptInbox). Pick up the oldest one on
+    // open, and listen for any that land while we are already here.
+    // Both paths feed _onScanned - the same signature verification and
+    // confirmation a scanned QR gets. Nothing arriving on a cable-free
+    // carrier is ever recorded automatically.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _handling || _submitting || _pending != null) return;
+      final waiting = ReceiptInbox.instance.take();
+      if (waiting != null) unawaited(_onScanned(waiting));
+    });
+    _inboxSub = ReceiptInbox.instance.events.listen((raw) {
+      if (!mounted || _handling || _submitting || _pending != null) return;
+      ReceiptInbox.instance.claim(raw);
+      unawaited(_onScanned(raw));
+    });
+  }
+
+  @override
+  void dispose() {
+    _inboxSub?.cancel();
+    super.dispose();
+  }
 
   Future<void> _onScanned(String raw) async {
-    if (_submitting || _pending != null) return;
+    if (_handling || _submitting || _pending != null) return;
+    _handling = true;
 
     try {
       final message = QrMessage.decode(raw);
@@ -57,6 +95,8 @@ class _RecordPaymentScreenState extends State<RecordPaymentScreen> {
       }
     } on FormatException catch (e) {
       _showError(e.message);
+    } finally {
+      _handling = false;
     }
   }
 
@@ -155,6 +195,28 @@ class _RecordPaymentScreenState extends State<RecordPaymentScreen> {
             helpText: 'Scan the receipt QR shown by the payer',
           ),
         ),
+        // Phase 8: a receipt can arrive over the LAN while this screen
+        // is busy (or just before it opened). Surface it instead of
+        // hiding it - tapping feeds it through the same _onScanned path.
+        if (ReceiptInbox.instance.length > 0 &&
+            !_handling &&
+            !_submitting &&
+            _pending == null) ...[
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            icon: const Icon(Icons.wifi),
+            label: Text(
+              ReceiptInbox.instance.length == 1
+                  ? '1 receipt arrived from a nearby device - record it'
+                  : '${ReceiptInbox.instance.length} receipts arrived from a '
+                      'nearby device - record them',
+            ),
+            onPressed: () {
+              final raw = ReceiptInbox.instance.take();
+              if (raw != null) unawaited(_onScanned(raw));
+            },
+          ),
+        ],
       ],
     );
   }

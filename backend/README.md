@@ -356,7 +356,9 @@ node scripts/verify_receipt.js receipt.json   # paste a receipt from the app
 - [x] **Phase 5**: Cryptographic signatures (verifier + interop vector)
 - [x] **Phase 6**: Backend synchronization (push/pull + TOFU key registration)
 - [x] **Phase 7**: Double-spending protection (server-side balance arbitration + onboarding)
-- [ ] **Phase 8**: Advanced communication (Bluetooth/NFC)
+- [x] **Phase 8**: Advanced communication (app-side: tested LAN carrier +
+  Bluetooth/NFC adapters; backend unchanged - the same two messages the
+  QR flow carries just arrive differently)
 
 ## Project Structure
 
@@ -418,7 +420,9 @@ backend/
   load-compare-save, not one atomic DB operation (see section 8 of
   docs/OFFLINE_FIRST.md), and there is still no authentication.
 - Double-spending protection via server-side balance arbitration
-  (Phase 7) - DONE; Phase 8 (Bluetooth/NFC transport) remains.
+  (Phase 7) - DONE. Phase 8 (device-to-device carriers: tested LAN +
+  hardware-unverified Bluetooth/NFC) is app-side only - the backend
+  sees nothing new; the same sync gates apply to whatever arrives.
 
 ## License
 

@@ -26,7 +26,8 @@ Alice (₹500)  ──[QR Code]──>  Bob (Merchant)
 - **Framework**: Flutter
 - **Language**: Dart
 - **Local Storage**: SQLite or Hive
-- **Communication**: QR codes (Phase 2), Bluetooth/NFC (Phase 8)
+- **Communication**: QR codes (Phase 2), Wi-Fi LAN channel (Phase 8, tested),
+  Bluetooth/NFC adapters (Phase 8, service-level - hardware-unverified)
 
 ### Backend
 - **Runtime**: Node.js
@@ -244,15 +245,47 @@ See `docs/OFFLINE_FIRST.md` section 8.
 - First-received-wins policy ✅ (first copy of a transactionId is kept;
   first spend of a shared balance wins)
 
-### 🔄 Phase 8: Advanced Communication
+### ✅ Phase 8: Advanced Communication
 **Goal**: Alternative device-to-device communication
 
-**Features**:
-- Bluetooth payment transfer
-- NFC tap-to-pay
-- Direct device pairing
+QR stays the reference carrier (it always works and needs no radio or
+permissions). Phase 8 adds a **carrier seam** (`services/peer/`) that
+moves the *same two JSON messages* over other media, with one rule: a
+message arriving on any carrier gets exactly the QR treatment -
+signature verification + explicit user confirmation before anything is
+recorded.
 
-**Note**: Only implement after Phases 1-7 work correctly
+**What shipped**:
+- **LAN channel - fully implemented and fully tested** (`lan_peer.dart`):
+  the receiver's phone runs a tiny HTTP host serving the payment request
+  over the local Wi-Fi; the payer fetches it by typing `ip:port` instead
+  of scanning; after paying, the receipt is POSTed back to the same host
+  and lands in `ReceiptInbox`, where `RecordPaymentScreen` verifies and
+  records it like any scanned QR. Runs on `dart:io` sockets only -
+  `test/lan_peer_test.dart` exercises the real host and client on
+  loopback (fetch, receipt round-trip, garbage rejected 400, dead-port
+  friendly errors, stop semantics, address parsing, inbox behaviour).
+- **Bluetooth/direct adapter - service-level, hardware-unverified**
+  (`nearby_peer.dart`): advertise/discover/connect/send over Google
+  Nearby Connections (BLE discovery + BLE/Wi-Fi payloads), with runtime
+  permission handling. Written against the installed plugin's real API.
+  **Never executed on a device** (no Android SDK/hardware in this dev
+  environment) - `flutter analyze` only. Note: `flutter_blue_plus` was
+  evaluated first and rejected because 2.x is central-only (no
+  advertising/GATT server), which makes phone↔phone impossible with it.
+- **NFC adapter - service-level, hardware-unverified, Android-only**
+  (`nfc_peer.dart`): receiver emulates an NDEF text message via host
+  card emulation (`flutter_nfc_hce`), payer reads it in a reader session
+  (`nfc_manager`); roles swap for the receipt. The NDEF text decoder is
+  unit-tested (`nfc_ndef_decode_test.dart`); everything touching the
+  radios is analyze-verified only.
+- **Android wiring**: Bluetooth/NFC permissions, HCE service
+  registration and `apduservice.xml` written into the manifest/res by
+  hand (each annotated with why it exists).
+
+**Note**: Bluetooth/NFC need real hardware to confirm; the LAN channel
+is the one this repo can prove. See OFFLINE_FIRST.md section 10 for the
+honest limitation list.
 
 ## Project Structure
 
@@ -418,6 +451,26 @@ Device                              Backend
 All of the above run in `npm run test:phase7` (18 checks, real HTTP) and
 `test/sync_service_test.dart`.
 
+### Phase 8 Testing
+- LAN host serves the exact request JSON; client fetches it byte-for-byte
+- Receipt round-trips: `sendReceipt` → host callback with identical JSON
+- Unreachable host → `PeerTransportException` with a human-readable reason
+- Garbage receipt body → HTTP 400, callback never fires
+- Hostile server returning non-JSON → rejected on fetch
+- `stop()` makes the host unreachable; unknown paths answer 404
+- Address parsing (`ip:port`) accepts good input, rejects bad with clear
+  reasons
+- `ReceiptInbox` queues in order, hands out once, stream+claim never
+  double-delivers
+- NDEF text-record decoding: standard records decode; URI/MIME/UTF-16/
+  truncated records are refused instead of guessed
+
+All run in `test/lan_peer_test.dart` (17 checks against real sockets on
+loopback) and `test/nfc_ndef_decode_test.dart` (5 checks). The
+Bluetooth/NFC radio paths are **not** executed here - that is what the
+honest "hardware-unverified" labels in `nearby_peer.dart` /
+`nfc_peer.dart` are for.
+
 ## Important Notes
 
 ### This is NOT:
@@ -456,10 +509,11 @@ cd mobile  && flutter pub get && flutter run
 
 ## Next Steps
 
-1. ✅ Complete Phase 1 backend
-2. ⏳ Install Flutter SDK
-3. ⏳ Implement Phase 1 mobile UI
-4. ⏳ Start Phase 2 QR implementation
+1. ✅ Phases 1-8 all implemented (this guide documents what exists)
+2. ⏳ Run the Bluetooth/NFC carriers on real Android hardware - today
+   they are API-verified only (no device in this dev environment)
+3. ⏳ Optional hardening called out in OFFLINE_FIRST.md: sync
+   authentication, TLS, atomic balance gate
 
 ## Resources
 

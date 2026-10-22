@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Phase 8 (NFC carrier): capabilities of OfflinePay's host-card-emulation
+  service, referenced by the KHostApduService declaration in
+  AndroidManifest.xml. The AID (D2760000850101) is the standard NDEF
+  type-AID pair, so an ordinary NFC reader app reads us as an NDEF tag
+  carrying the payment/receipt JSON. setup required by flutter_nfc_hce's
+  README - copied from the plugin example with our own descriptions.
+-->
+<host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+                   android:description="@string/servicedesc"
+                   android:requireDeviceScreenOn="false"
+                   android:requireDeviceUnlock="false">
+    <aid-group android:description="@string/aiddescription"
+               android:category="other">
+        <aid-filter android:name="D2760000850101"/>
+    </aid-group>
+</host-apdu-service>

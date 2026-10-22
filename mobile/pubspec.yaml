@@ -39,6 +39,10 @@ dependencies:
   bcrypt: ^1.2.0
   cryptography: ^2.9.0
   flutter_secure_storage: ^11.2.0
+  nfc_manager: ^4.2.1
+  permission_handler: ^13.0.2
+  flutter_nfc_hce: ^0.1.8
+  nearby_connections: ^4.3.0
 
 dev_dependencies:
   flutter_test:

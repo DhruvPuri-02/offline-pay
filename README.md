@@ -20,7 +20,9 @@ and double-spend controls.
 - ✅ Phase 5: Cryptographic signatures (Ed25519 receipts, verified on scan + by Node)
 - ✅ Phase 6: Backend synchronization (push verdicts, pull merge, TOFU key binding)
 - ✅ Phase 7: Double-spending protection (server-side balance arbitration, clone-stopper)
-- 🔄 Phase 8: Advanced communication (Bluetooth/NFC)
+- ✅ Phase 8: Advanced communication - Wi-Fi LAN channel (implemented **and**
+  tested) + Bluetooth/NFC adapters (service-level, honestly labeled
+  hardware-unverified)
 
 ## Technology Stack
 
@@ -28,6 +30,9 @@ and double-spend controls.
 - Flutter (Dart)
 - SQLite (sqflite) for local, offline storage
 - mobile_scanner / qr_flutter for the QR transport
+- Peer carriers (Phase 8): `dart:io` sockets for the tested LAN channel;
+  nearby_connections / flutter_nfc_hce / nfc_manager for the
+  hardware-unverified Bluetooth and NFC adapters
 
 ### Backend
 - Node.js + Express.js
@@ -71,6 +76,12 @@ and double-spend controls.
    (`INSUFFICIENT_BALANCE`) and its app corrects itself to the server's
    number. First-time syncs onboard the account with a server-decided
    ₹500 grant plus any payments escrowed while the device was away.
+8. **Same payment over Wi-Fi instead of a QR scan** - the receiver
+   switches on "Also serve via Wi-Fi" (Receive screen), the payer types
+   the shown `ip:port` in Scan → Fetch, pays exactly as before, and sends
+   the receipt straight back; the receiver still verifies its signature
+   and confirms before it is recorded. No cloud, no internet, same
+   protocol - and this channel is covered by real-socket tests.
 
 ## Quick Start
 
@@ -85,7 +96,7 @@ npm test           # Phase 1 demo script, runs anywhere
 cd mobile
 flutter pub get
 flutter analyze
-flutter test       # 98 tests
+flutter test       # 120 tests
 flutter run        # device/emulator
 ```
 
@@ -122,6 +133,11 @@ offline-pay/
   userId wins - account, grant and key) and runs over cleartext HTTP;
   the balance gate is load-compare-save, not atomic. Fine for a LAN
   demo, not for production.
+- The Phase 8 LAN carrier is equally unauthenticated: plain HTTP, anyone
+  on the same Wi-Fi can fetch the (public) request or inject junk
+  receipts that fail verification anyway. The Bluetooth/NFC adapters
+  have never run on hardware from this repo - only their APIs are
+  verified - so they are labeled accordingly wherever they appear.
 - Amounts use `double`; real financial systems use integer minor units.
 
 ---

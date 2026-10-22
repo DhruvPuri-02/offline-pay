@@ -195,9 +195,34 @@ test:phase7` (18 real-HTTP checks incl. the clone double-spend).
 Honest limits (no auth - first claim wins; load-compare-save, not
 atomic; arbitration only at sync): `docs/OFFLINE_FIRST.md` section 8.
 
-### 🔄 Next: Phase 8 - Advanced communication
-Bluetooth/NFC device-to-device transport (the QR flow keeps working as
-the fallback).
+### ✅ Phase 8 - Advanced communication
+The two protocol messages (request + receipt) can now travel without a
+QR scan, behind one rule: however a message arrives, it gets the same
+signature verification and the same explicit confirmation before
+anything is recorded.
+
+- **Wi-Fi LAN channel - works and is tested** (`flutter test`,
+  `test/lan_peer_test.dart` runs the real host and client on loopback).
+  Demo with two devices: in **Receive**, generate the QR as usual, then
+  flip **"Also serve via Wi-Fi"** and note the shown `ip:port`. On the
+  payer device open **Scan**, type that address under **"From a nearby
+  device (same Wi-Fi)"** and tap **Fetch** - pay exactly like a QR flow.
+  After paying, tap **"Send receipt to ip:port"** on the receipt screen;
+  the receiver gets a "Receipt received" notice and records it in
+  **Receive → Scan incoming payment**, where the signature check and
+  confirmation run as always. Both phones must be on the same Wi-Fi (or
+  one phone's hotspot).
+- **Bluetooth (Nearby Connections) and NFC (tap exchange) adapters**:
+  service-level code written against the installed plugins' APIs and
+  wired into the Android manifest, but **never executed on hardware in
+  this repo** (no Android SDK/device here) - so they are labeled
+  "hardware-unverified" everywhere and are not yet on the screens. They
+  need a real phone + permissions to become features. Honest details and
+  integration notes: `docs/OFFLINE_FIRST.md` section 10, and the header
+  comments in `mobile/lib/services/peer/`.
+
+Self-check: `cd mobile && flutter analyze && flutter test` (120 tests).
+QR remains the always-works fallback for every carrier.
 
 ---
 
@@ -213,6 +238,8 @@ the fallback).
 | Windows build: "requires symlink support" | Enable Windows Developer Mode |
 | App cannot reach backend on a phone | Use your PC's LAN IP in `mobile/lib/services/api_service.dart` (`baseUrl`); the offline flow does not need this |
 | Sync says "Push failed" | Backend not running (or wrong `baseUrl`) - start it with `npm.cmd start`; the queue keeps everything meanwhile |
+| Nearby fetch: "Could not reach ip:port" | Both devices on the same Wi-Fi (or one hotspot), the Receive screen still shows its request **and** the Wi-Fi switch is ON (leaving Receive stops serving), correct port from the displayed address |
+| Bluetooth/NFC buttons missing | Expected: those carriers are service-level adapters until confirmed on real hardware; the LAN + QR paths are the working ones |
 
 ---
 
@@ -226,7 +253,7 @@ the fallback).
 ---
 
 **Project**: OfflinePay
-**Status**: Phases 1-7 complete
+**Status**: Phases 1-8 complete
 **Date**: October 2026
 
 **⚠️ SIMULATED MONEY ONLY - Educational Project**

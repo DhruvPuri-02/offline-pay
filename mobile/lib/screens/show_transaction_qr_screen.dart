@@ -4,6 +4,8 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../models/transaction.dart';
 import '../models/qr_message.dart';
+import '../services/peer/lan_peer.dart';
+import '../services/peer/peer_transport.dart';
 
 /// Shown to the PAYER right after an offline payment is created.
 ///
@@ -12,14 +14,70 @@ import '../models/qr_message.dart';
 /// payment - which is how the money actually crosses between devices
 /// without internet. Until the receiver scans it, only the payer's ledger
 /// knows about the transaction.
-class ShowTransactionQRScreen extends StatelessWidget {
-  const ShowTransactionQRScreen({super.key, required this.transaction});
+///
+/// Phase 8: when the request was fetched from a receiver's LAN host
+/// ([lanTarget]), the receipt can be POSTED back to that same device with
+/// one tap instead of a scan. The QR stays visible as the fallback for
+/// every failure - sending over LAN is convenience, never a requirement.
+class ShowTransactionQRScreen extends StatefulWidget {
+  const ShowTransactionQRScreen({
+    super.key,
+    required this.transaction,
+    this.lanTarget,
+  });
 
   final Transaction transaction;
 
+  /// Where to send the receipt back over the LAN channel, or null when
+  /// the request arrived by QR scan/paste (no return address exists).
+  final LanTarget? lanTarget;
+
+  @override
+  State<ShowTransactionQRScreen> createState() => _ShowTransactionQRScreenState();
+}
+
+class _ShowTransactionQRScreenState extends State<ShowTransactionQRScreen> {
+  bool _sending = false;
+  bool _sent = false;
+
+  /// Phase 8 receipt leg: payer -> receiver over the LAN host that served
+  /// the request. Best effort - a failure just leaves the QR on screen.
+  Future<void> _sendReceipt(LanTarget target) async {
+    if (_sending || _sent) return;
+    setState(() => _sending = true);
+    try {
+      await LanPeerClient().sendReceipt(
+        target,
+        encodeTransactionReceipt(widget.transaction),
+      );
+      if (!mounted) return;
+      setState(() => _sent = true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Receipt sent - the receiver records it in '
+            '"I received a payment" after verifying it.',
+          ),
+        ),
+      );
+    } on PeerTransportException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${e.reason} Show the QR instead.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final receiptJson = encodeTransactionReceipt(transaction);
+    final receiptJson = encodeTransactionReceipt(widget.transaction);
+    final target = widget.lanTarget;
+    final transaction = widget.transaction;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Payment Created')),
@@ -128,6 +186,30 @@ class ShowTransactionQRScreen extends StatelessWidget {
                 }
               },
             ),
+
+            // Phase 8: send the receipt back over the LAN channel the
+            // request arrived on (only when there IS one).
+            if (target != null) ...[
+              const SizedBox(height: 8),
+              FilledButton.icon(
+                icon: _sent ? const Icon(Icons.check) : const Icon(Icons.wifi),
+                label: Text(
+                  _sent
+                      ? 'Receipt sent to $target'
+                      : 'Send receipt to $target',
+                ),
+                onPressed: (_sending || _sent) ? null : () => _sendReceipt(target),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Hands the receipt to the receiver\'s phone directly. '
+                'They still verify its signature and confirm before it '
+                'is recorded - sending is never recording.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            ],
+
             const SizedBox(height: 8),
             FilledButton(
               onPressed: () => Navigator.pop(context),

@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'dart:async';
 import 'dart:convert';
 import '../providers/wallet_provider.dart';
 import '../models/qr_payload.dart';
+import '../services/peer/lan_peer.dart';
+import '../services/receipt_inbox.dart';
 import '../utils/id_generator.dart';
 
 class ReceiveScreen extends StatefulWidget {
@@ -19,11 +22,83 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
   QRPayload? _qrPayload;
   bool _isGenerating = false;
 
+  // Phase 8: the same request shown as a QR can also be SERVED over the
+  // local Wi-Fi so a payer fetches it by address instead of scanning.
+  // The host lives in this screen's state: it starts when the receiver
+  // switches it on and stops when they cancel or leave this screen.
+  final LanPeerHost _lanHost = LanPeerHost();
+  bool _servingLan = false;
+  bool _lanBusy = false;
+  String? _lanAddress;
+
   @override
   void dispose() {
+    unawaited(_lanHost.stop());
     _amountController.dispose();
     _descriptionController.dispose();
     super.dispose();
+  }
+
+  /// Switch handler: start/stop serving the current request over Wi-Fi.
+  Future<void> _toggleLan(bool enabled) async {
+    final payload = _qrPayload;
+    if (payload == null || _lanBusy) return;
+    setState(() => _lanBusy = true);
+    try {
+      if (enabled) {
+        // Byte-for-byte the JSON the QR shows - one protocol message,
+        // two carriers.
+        await _lanHost.start(
+          requestJson: jsonEncode(payload.toJson()),
+          onReceipt: _onLanReceipt,
+        );
+        final address = await _lanHost.addressLabel();
+        if (!mounted) return;
+        setState(() {
+          _servingLan = true;
+          _lanAddress = address;
+        });
+      } else {
+        await _lanHost.stop();
+        if (!mounted) return;
+        setState(() {
+          _servingLan = false;
+          _lanAddress = null;
+        });
+      }
+    } catch (error) {
+      await _lanHost.stop();
+      if (!mounted) return;
+      setState(() {
+        _servingLan = false;
+        _lanAddress = null;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not share over Wi-Fi: $error'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _lanBusy = false);
+    }
+  }
+
+  /// A receipt arrived over the LAN channel: park it in the inbox. It is
+  /// NOT recorded here - RecordPaymentScreen runs the same signature
+  /// verification and user confirmation as a scanned QR (see
+  /// services/receipt_inbox.dart).
+  void _onLanReceipt(String receiptJson) {
+    ReceiptInbox.instance.add(receiptJson);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Receipt received from a nearby device - open '
+          '"I received a payment" to record it.',
+        ),
+      ),
+    );
   }
 
   void _generateQR() {
@@ -60,8 +135,11 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
   }
 
   void _clearQR() {
+    unawaited(_lanHost.stop());
     setState(() {
       _qrPayload = null;
+      _servingLan = false;
+      _lanAddress = null;
       _amountController.clear();
       _descriptionController.clear();
     });
@@ -159,6 +237,39 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                         ),
                       ),
                     ),
+                    const SizedBox(height: 16),
+                    // Phase 8 alternative carrier: serve the identical
+                    // request JSON to a payer on the same Wi-Fi.
+                    Card(
+                      child: SwitchListTile(
+                        secondary: const Icon(Icons.wifi),
+                        title: const Text('Also serve via Wi-Fi'),
+                        subtitle: Text(
+                          _servingLan
+                              ? _lanAddress != null
+                                  ? 'Address for the payer: $_lanAddress'
+                                  : 'Serving - no address found, check Wi-Fi '
+                                      'is connected'
+                              : 'A nearby phone can fetch this request '
+                                  'instead of scanning',
+                        ),
+                        value: _servingLan,
+                        onChanged: _lanBusy ? null : _toggleLan,
+                      ),
+                    ),
+                    if (_servingLan && _lanAddress != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        'On the payer phone: Scan → "From a nearby device" '
+                        '→ enter that address. They pay offline; the receipt '
+                        'travels back and you record it in "I received a '
+                        'payment" with the usual verification.',
+                        style: TextStyle(
+                          color: Colors.blue.shade900,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 16),
                     OutlinedButton.icon(
                       onPressed: _clearQR,
