@@ -86,9 +86,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   // Greeting
                   Text(
                     'Hello, ${wallet.currentUser!.name}',
-                    style: Theme.of(context).textTheme.headlineSmall,
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Your offline-first wallet',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                  const SizedBox(height: 20),
 
                   // Balance Card (available / confirmed / pending)
                   BalanceCard(summary: wallet.balanceSummary),
@@ -103,33 +112,58 @@ class _HomeScreenState extends State<HomeScreen> {
 
                   // Quick Actions
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
-                      QuickActionButton(
-                        icon: Icons.payments,
-                        label: 'Pay',
-                        onTap: () => Navigator.pushNamed(context, '/pay'),
+                      Expanded(
+                        child: QuickActionButton(
+                          icon: Icons.payments,
+                          label: 'Pay',
+                          onTap: () => Navigator.pushNamed(context, '/pay'),
+                        ),
                       ),
-                      QuickActionButton(
-                        icon: Icons.qr_code,
-                        label: 'Receive',
-                        onTap: () => Navigator.pushNamed(context, '/receive'),
+                      Expanded(
+                        child: QuickActionButton(
+                          icon: Icons.qr_code,
+                          label: 'Receive',
+                          onTap: () => Navigator.pushNamed(context, '/receive'),
+                        ),
                       ),
-                      QuickActionButton(
-                        icon: Icons.history,
-                        label: 'History',
-                        onTap: () => Navigator.pushNamed(context, '/history'),
+                      Expanded(
+                        child: QuickActionButton(
+                          icon: Icons.qr_code_scanner,
+                          label: 'Scan',
+                          onTap: () => Navigator.pushNamed(context, '/scan'),
+                        ),
+                      ),
+                      Expanded(
+                        child: QuickActionButton(
+                          icon: Icons.history,
+                          label: 'History',
+                          onTap: () => Navigator.pushNamed(context, '/history'),
+                        ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 32),
 
                   // Recent Transactions
-                  Text(
-                    'Recent Transactions',
-                    style: Theme.of(context).textTheme.titleLarge,
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Recent Transactions',
+                          style:
+                              Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pushNamed(context, '/history'),
+                        child: const Text('See all'),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 8),
                   RecentTransactions(
                     transactions: wallet.transactions.take(5).toList(),
                     currentUserId: wallet.currentUser!.userId,
@@ -140,9 +174,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Colors.orange.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.orange),
+                      color: Colors.orange.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Colors.orange.withValues(alpha: 0.4),
+                      ),
                     ),
                     child: Row(
                       children: [
@@ -194,8 +230,11 @@ class _SyncStatusCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+        ),
       ),
       child: Row(
         children: [

@@ -31,6 +31,7 @@ class RecentTransactions extends StatelessWidget {
           .map((txn) => TransactionTile(
                 transaction: txn,
                 currentUserId: currentUserId,
+                margin: const EdgeInsets.symmetric(vertical: 4),
               ))
           .toList(),
     );

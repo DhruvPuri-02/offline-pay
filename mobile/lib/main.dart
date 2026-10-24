@@ -45,28 +45,8 @@ class OfflinePayApp extends StatelessWidget {
       child: MaterialApp(
         title: 'OfflinePay',
         debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: Colors.deepPurple,
-            brightness: Brightness.light,
-          ),
-          useMaterial3: true,
-          appBarTheme: const AppBarTheme(
-            centerTitle: true,
-            elevation: 0,
-          ),
-        ),
-        darkTheme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: Colors.deepPurple,
-            brightness: Brightness.dark,
-          ),
-          useMaterial3: true,
-          appBarTheme: const AppBarTheme(
-            centerTitle: true,
-            elevation: 0,
-          ),
-        ),
+        theme: _buildTheme(Brightness.light),
+        darkTheme: _buildTheme(Brightness.dark),
         themeMode: ThemeMode.system,
         initialRoute: '/',
         routes: {
@@ -80,4 +60,71 @@ class OfflinePayApp extends StatelessWidget {
       ),
     );
   }
+}
+
+/// One place for the app's look: calm indigo palette, soft cards, rounded
+/// inputs and buttons. Screens inherit all of this automatically.
+ThemeData _buildTheme(Brightness brightness) {
+  final scheme = ColorScheme.fromSeed(
+    seedColor: const Color(0xFF4338CA),
+    brightness: brightness,
+  );
+  final isLight = brightness == Brightness.light;
+
+  return ThemeData(
+    useMaterial3: true,
+    colorScheme: scheme,
+    scaffoldBackgroundColor:
+        isLight ? const Color(0xFFF6F7FB) : scheme.surface,
+    appBarTheme: AppBarTheme(
+      centerTitle: false,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      backgroundColor: Colors.transparent,
+      foregroundColor: scheme.onSurface,
+      titleTextStyle: TextStyle(
+        fontSize: 20,
+        fontWeight: FontWeight.w700,
+        letterSpacing: -0.2,
+        color: scheme.onSurface,
+      ),
+    ),
+    cardTheme: CardThemeData(
+      elevation: 0,
+      color: scheme.surface,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+      ),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        minimumSize: const Size(64, 48),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: scheme.surface,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: scheme.outlineVariant),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: scheme.outlineVariant),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: scheme.primary, width: 2),
+      ),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
+  );
 }

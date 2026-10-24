@@ -5,11 +5,13 @@ import '../models/transaction.dart';
 class TransactionTile extends StatelessWidget {
   final Transaction transaction;
   final String currentUserId;
+  final EdgeInsetsGeometry margin;
 
   const TransactionTile({
     super.key,
     required this.transaction,
     required this.currentUserId,
+    this.margin = const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
   });
 
   @override
@@ -17,7 +19,7 @@ class TransactionTile extends StatelessWidget {
     final isSender = transaction.senderId == currentUserId;
     
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      margin: margin,
       child: ListTile(
         leading: CircleAvatar(
           backgroundColor: isSender ? Colors.red.shade100 : Colors.green.shade100,
@@ -85,10 +87,10 @@ class TransactionTile extends StatelessWidget {
     }
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(20),
       ),
       child: Text(
         label,
